@@ -1,0 +1,12 @@
+{
+  "name": "2d-game-sprites-ai-gen",
+  "image": "mcr.microsoft.com/devcontainers/go:1-1.26-bookworm",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/go-task:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.Go"]
+    }
+  }
+}

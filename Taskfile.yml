@@ -1,0 +1,29 @@
+version: "3"
+
+tasks:
+  fix:
+    desc: Format Go source
+    cmds:
+      - gofmt -w .
+
+  validate:
+    desc: Validate Go source and tests
+    cmds:
+      - go test ./...
+
+  test:
+    desc: Run Go tests
+    cmds:
+      - go test ./...
+
+  e2e:
+    desc: Run deterministic end-to-end tests
+    cmds:
+      - go test ./... -run 'TestE2E'
+
+  e2e:live:
+    desc: Run opt-in live OpenAI smoke tests
+    env:
+      SPRITES_AI_GEN_LIVE: "1"
+    cmds:
+      - go test ./... -run 'TestLive'
