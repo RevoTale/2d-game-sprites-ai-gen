@@ -2,12 +2,23 @@
 
 Schema-driven CLI for generating reusable 2D sprite assets with AI.
 
-The generator reads:
+The generator reads `THEME.md` for shared style direction and `sprites.json` for objects, variants, animations, frames, references, output, and deploy paths. Each expanded target is generated as its own image; the CLI never crops AI-generated sheets into frames.
 
-- `THEME.md` for shared style direction.
-- `sprites.json` for objects, variants, animations, frames, references, output, and deploy paths.
+## Features
 
-Each expanded target is generated as its own image. The CLI never crops AI-generated sheets into frames.
+- Static sprite and animated frame generation from one schema.
+- Generic `variants` for directions, skins, growth stages, materials, or any other axis.
+- Variant cross-product expansion for full target coverage.
+- Independent image generation for every expanded target.
+- Reference image declarations at broad or specific levels.
+- Strict validation for pack schema, references, target paths, and managed output.
+- Resumable runs with generated, accepted, rejected, and deployed states.
+- Review sheets assembled from normalized target images.
+- Bulk accept/reject review workflow with required rejection reasons.
+- Deploy plans that show exactly what will be replaced and what will stay unchanged.
+- Partial deploy by default, with `--complete` for strict full-scope deploys.
+- Optional pruning of raw generated attempts after review metadata is preserved.
+- Deterministic fake provider for tests and OpenAI as the first real provider.
 
 ## Quick Start
 
@@ -24,85 +35,27 @@ sprites-ai-gen deploy-plan --pack . --run 2026-07-03-m0847
 sprites-ai-gen deploy --pack . --run 2026-07-03-m0847
 ```
 
-## Review Flow
+## Basic Workflow
 
-Generated images are drafts. Use `review` to accept or reject them before deploy.
+1. Write `THEME.md` and `sprites.json`, or start with `sprites-ai-gen init`.
+2. Run `sprites-ai-gen validate --pack .`.
+3. Generate one object, variant, animation, frame, or the whole pack.
+4. Check run progress with `sprites-ai-gen status`.
+5. Build review sheets with `sprites-ai-gen sheet`.
+6. Mark generated targets with `sprites-ai-gen review`.
+7. Preview changes with `sprites-ai-gen deploy-plan`.
+8. Deploy accepted targets with `sprites-ai-gen deploy`.
+9. Prune raw attempts with `sprites-ai-gen prune --only-raw` when they are no longer needed.
 
-Rejected targets require a reason so later regeneration knows what to fix. Accepted targets can be accepted in bulk after visual review.
+Generated images are drafts until reviewed. Rejected targets require a reason so later regeneration knows what to fix. Accepted targets can be accepted in bulk after visual review.
 
-## Expected Flow
-
-The CLI is built around a draft lifecycle:
-
-1. `init` creates a minimal sprite pack.
-2. `validate` proves `THEME.md`, `sprites.json`, references, target expansion, and path templates are valid.
-3. `generate` creates or resumes a run and generates only matched pending targets. Each expanded target is generated as an independent image.
-4. `sheet` assembles review sheets from normalized target images. Sheets are review artifacts only.
-5. `review` records human or agent visual QA decisions. Accepted targets can be bulk reviewed; rejected targets require a reason.
-6. `deploy-plan` previews what accepted targets would replace and what non-accepted targets would leave unchanged.
-7. `deploy` copies only accepted target images. Partial deploy is the default; `--complete` requires every target in scope to be accepted.
-8. `prune --only-raw` can remove raw attempt files after metadata is preserved.
-
-## Run Output
-
-Managed output lives under `output/runs/<run-id>/` by default:
-
-```text
-output/
-  runs/
-    2026-07-03-m0847/
-      manifest.json
-      targets/
-        blood-duelist__attack__direction-right__contact/
-          prompt.md
-          qa.md
-          normalized.png
-          attempts/
-            001/
-              raw-candidate.png
-      contact-sheets/
-        blood-duelist.png
-```
-
-`raw-candidate.png` is provider evidence. `normalized.png` is the deployment candidate. Only accepted normalized target images are copied by `deploy`.
-
-## Status Lifecycle
-
-Targets move through explicit states:
-
-```text
-pending -> generated -> accepted -> deployed
-                    \-> rejected -> generated
-```
-
-Accepted and deployed targets are protected from regeneration unless `--force` is used. When `--force` creates a new attempt, old attempt and review history remains in `manifest.json`.
-
-## Package Map
-
-- `internal/pack` parses and validates user-authored pack files.
-- `internal/targets` expands objects, variants, animations, and frames into deterministic target IDs.
-- `internal/generate` owns run manifests, resumable generation, and artifact writes.
-- `internal/review` records accept/reject QA decisions.
-- `internal/deploy` previews and copies accepted targets.
-- `internal/imageio` handles PNG validation, copying, and sheet assembly.
-- `internal/provider` isolates AI provider implementations behind one interface.
-
-## Sprite Pack Shape
-
-`type` is intentionally absent. Objects with `animations` produce animated frame targets; objects without animations produce static targets. `variants` are generic axes, so `direction`, `skin`, `growth`, and similar dimensions all use the same schema.
+## Minimal Pack
 
 ```json
 {
   "version": 1,
   "outputDir": "output",
-  "deployDir": "../game/assets/source",
-  "references": [
-    {
-      "path": "references/style-anchor.png",
-      "description": "Global pixel-art style anchor.",
-      "required": true
-    }
-  ],
+  "deployDir": "deploy",
   "objects": [
     {
       "id": "blood-duelist",
@@ -113,8 +66,6 @@ Accepted and deployed targets are protected from regeneration unless `--force` i
           "id": "direction",
           "description": "Battlefield facing direction.",
           "values": [
-            { "id": "down", "description": "Facing toward camera." },
-            { "id": "up", "description": "Facing away from camera." },
             { "id": "right", "description": "Side view facing right." }
           ]
         }
@@ -122,12 +73,10 @@ Accepted and deployed targets are protected from regeneration unless `--force` i
       "animations": [
         {
           "id": "attack",
-          "description": "Rapier attack animation with readable body motion and no projectile pixels.",
+          "description": "Rapier attack animation with readable body motion.",
           "frames": [
             { "description": "Ready stance." },
-            { "description": "Windup, torso rotates back." },
-            { "id": "contact", "description": "Forward thrust contact frame." },
-            { "description": "Recovery back to guard." }
+            { "id": "contact", "description": "Forward thrust contact frame." }
           ]
         }
       ],
@@ -138,3 +87,9 @@ Accepted and deployed targets are protected from regeneration unless `--force` i
   ]
 }
 ```
+
+## Documentation
+
+- [Workflow](docs/workflow.md): run lifecycle, output layout, statuses, review, deploy, and pruning.
+- [Sprite Pack Schema](docs/sprites-json.md): `sprites.json` fields, variants, frames, references, and deploy templates.
+- [Architecture](docs/architecture.md): package responsibilities and maintainer-facing boundaries.
