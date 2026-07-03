@@ -2,23 +2,7 @@
 
 Schema-driven CLI for generating reusable 2D sprite assets with AI.
 
-The generator reads `THEME.md` for shared style direction and `sprites.json` for objects, variants, animations, frames, references, output, and deploy paths. Each expanded target is generated as its own image; the CLI never crops AI-generated sheets into frames.
-
-## Features
-
-- Static sprite and animated frame generation from one schema.
-- Generic `variants` for directions, skins, growth stages, materials, or any other axis.
-- Variant cross-product expansion for full target coverage.
-- Independent image generation for every expanded target.
-- Reference image declarations at broad or specific levels.
-- Strict validation for pack schema, references, target paths, and managed output.
-- Resumable runs with generated, accepted, rejected, and deployed states.
-- Review sheets assembled from normalized target images.
-- Bulk accept/reject review workflow with required rejection reasons.
-- Deploy plans that show exactly what will be replaced and what will stay unchanged.
-- Partial deploy by default, with `--complete` for strict full-scope deploys.
-- Optional pruning of raw generated attempts after review metadata is preserved.
-- Deterministic fake provider for tests and OpenAI as the first real provider.
+Use this when you want static sprites or animated frames generated from a project-local `THEME.md` and `sprites.json`. Every target image is generated independently. Review sheets are assembled from generated targets; the CLI never crops AI-generated sheets into source frames.
 
 ## Quick Start
 
@@ -29,25 +13,87 @@ task test
 sprites-ai-gen init
 sprites-ai-gen validate --pack .
 sprites-ai-gen generate --pack . --run auto --object blood-duelist
+sprites-ai-gen status --pack . --run 2026-07-03-m0847
 sprites-ai-gen sheet --pack . --run 2026-07-03-m0847 --object blood-duelist
 sprites-ai-gen review --pack . --run 2026-07-03-m0847 --object blood-duelist --status accepted
 sprites-ai-gen deploy-plan --pack . --run 2026-07-03-m0847
 sprites-ai-gen deploy --pack . --run 2026-07-03-m0847
 ```
 
-## Basic Workflow
+## Command Flow
 
-1. Write `THEME.md` and `sprites.json`, or start with `sprites-ai-gen init`.
-2. Run `sprites-ai-gen validate --pack .`.
-3. Generate one object, variant, animation, frame, or the whole pack.
-4. Check run progress with `sprites-ai-gen status`.
-5. Build review sheets with `sprites-ai-gen sheet`.
-6. Mark generated targets with `sprites-ai-gen review`.
-7. Preview changes with `sprites-ai-gen deploy-plan`.
-8. Deploy accepted targets with `sprites-ai-gen deploy`.
-9. Prune raw attempts with `sprites-ai-gen prune --only-raw` when they are no longer needed.
+### Prepare a Pack
 
-Generated images are drafts until reviewed. Rejected targets require a reason so later regeneration knows what to fix. Accepted targets can be accepted in bulk after visual review.
+```bash
+sprites-ai-gen init
+sprites-ai-gen validate --pack .
+```
+
+`init` creates starter `THEME.md`, `sprites.json`, `.env.example`, and ignore rules. `validate` checks the pack schema, references, target expansion, deploy paths, and managed output structure before any image generation starts.
+
+### Generate Drafts
+
+```bash
+sprites-ai-gen generate --pack . --run auto
+sprites-ai-gen status --pack . --run 2026-07-03-m0847
+```
+
+`generate` creates or resumes a run and fills only missing matched targets. Static sprites, generic variants, animations, and frames all expand from `sprites.json`. `status` shows what is still pending, generated, accepted, rejected, deployed, or missing local artifacts.
+
+### Review the Images
+
+```bash
+sprites-ai-gen sheet --pack . --run 2026-07-03-m0847 --object blood-duelist
+sprites-ai-gen review --pack . --run 2026-07-03-m0847 --object blood-duelist --status accepted
+```
+
+`sheet` assembles review sheets from normalized target images only. The CLI never treats a sheet as source frames. `review` records visual QA decisions; rejected targets require `--reason`, while accepted targets can be bulk-marked after review.
+
+### Preview and Deploy
+
+```bash
+sprites-ai-gen deploy-plan --pack . --run 2026-07-03-m0847
+sprites-ai-gen deploy --pack . --run 2026-07-03-m0847
+```
+
+`deploy-plan` shows exactly which accepted targets would replace files and which non-accepted targets would stay unchanged. `deploy` copies accepted images only. Partial deploy is the default; add `--complete` when every scoped target must be accepted before anything is copied.
+
+### Clean Local Attempts
+
+```bash
+sprites-ai-gen prune --pack . --run 2026-07-03-m0847 --only-raw
+```
+
+`prune --only-raw` removes raw generated attempts after prompt, QA, and manifest metadata are preserved.
+
+## Scoped Generation
+
+Generate one object:
+
+```bash
+sprites-ai-gen generate --pack . --run auto --object blood-duelist
+```
+
+Generate one animation direction:
+
+```bash
+sprites-ai-gen generate --pack . --run auto \
+  --object blood-duelist \
+  --animation attack \
+  --variant direction=right
+```
+
+Generate one exact frame:
+
+```bash
+sprites-ai-gen generate --pack . --run auto \
+  --object blood-duelist \
+  --animation attack \
+  --variant direction=right \
+  --frame contact
+```
+
+Accepted and deployed targets are protected from regeneration. Use `--force` when you intentionally want a new attempt while keeping the old attempt and review history.
 
 ## Minimal Pack
 
