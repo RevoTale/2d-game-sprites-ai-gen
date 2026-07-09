@@ -32,13 +32,14 @@ type Manifest struct {
 }
 
 type TargetState struct {
-	ID             string        `json:"id"`
-	Status         string        `json:"status"`
-	DeployPath     string        `json:"deployPath,omitempty"`
-	NormalizedPath string        `json:"normalizedPath,omitempty"`
-	Attempts       []Attempt     `json:"attempts,omitempty"`
-	Review         *ReviewRecord `json:"review,omitempty"`
-	Deploy         *DeployRecord `json:"deploy,omitempty"`
+	ID             string         `json:"id"`
+	Status         string         `json:"status"`
+	DeployPath     string         `json:"deployPath,omitempty"`
+	NormalizedPath string         `json:"normalizedPath,omitempty"`
+	Attempts       []Attempt      `json:"attempts,omitempty"`
+	Review         *ReviewRecord  `json:"review,omitempty"`
+	ReviewHistory  []ReviewRecord `json:"reviewHistory,omitempty"`
+	Deploy         *DeployRecord  `json:"deploy,omitempty"`
 }
 
 type Attempt struct {
@@ -138,6 +139,7 @@ func Run(ctx context.Context, all []targets.Target, gen provider.Provider, opts 
 		if err := imageio.WriteNormalizedPNG(normalizedPath, providerResult.PNG, target.Size.Width, target.Size.Height); err != nil {
 			return result, err
 		}
+		archiveReview(state)
 		state.Status = StatusGenerated
 		state.NormalizedPath = normalizedPath
 		state.Attempts = append(state.Attempts, Attempt{ID: attemptID, RawPath: rawPath, CreatedAt: time.Now().UTC().Format(time.RFC3339), Metadata: providerResult.Metadata})
@@ -209,6 +211,13 @@ func SortedTargetIDs(m *Manifest) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func archiveReview(state *TargetState) {
+	if state.Review == nil {
+		return
+	}
+	state.ReviewHistory = append(state.ReviewHistory, *state.Review)
 }
 
 func pendingState(target targets.Target) *TargetState {

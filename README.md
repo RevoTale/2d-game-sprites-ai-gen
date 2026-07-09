@@ -38,7 +38,7 @@ sprites-ai-gen generate --pack . --run auto
 sprites-ai-gen status --pack . --run 2026-07-03-m0847
 ```
 
-`generate` creates or resumes a run and fills only missing matched targets. Static sprites, generic variants, animations, and frames all expand from `sprites.json`. `status` shows what is still pending, generated, accepted, rejected, deployed, or missing local artifacts.
+`generate` creates or resumes a run and fills only missing matched targets. Static sprites, generic variants, animations, and frames all expand from `sprites.json`. Providers may return larger raw canvases; the CLI aspect-fits each target into the exact configured sprite size. `status` shows what is still pending, generated, accepted, rejected, deployed, or missing local artifacts.
 
 ### Review the Images
 

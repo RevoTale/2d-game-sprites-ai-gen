@@ -15,6 +15,8 @@ This document describes the sprite draft lifecycle and run artifacts.
 
 Every expanded target is generated as an independent image. Sheets are review artifacts only and are never cropped into frame sources.
 
+Providers may generate a larger square canvas when their API cannot produce the configured sprite size directly. In that case `raw-candidate.png` preserves the provider output, and `normalized.png` is aspect-fit and transparent-padded to the exact target size for review and deploy.
+
 ## Run Output
 
 Managed output lives under `output/runs/<run-id>/` by default:

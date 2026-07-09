@@ -55,3 +55,28 @@ func TestGenerateSkipsAcceptedTargetsWithoutForce(t *testing.T) {
 	require.Equal(t, 0, second.Generated)
 	require.Equal(t, 1, second.Skipped)
 }
+
+func TestGenerateWithForcePreservesPreviousReviewHistory(t *testing.T) {
+	dir := testkit.WritePack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, p.OutputDir)
+	filter := targets.Filter{Object: "grass"}
+	_, err := generate.Run(context.Background(), all, provider.Fake{ReferenceSupport: true}, generate.Options{OutputDir: outputDir, RunID: "run", Filter: filter})
+	require.NoError(t, err)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	state := manifest.Targets["grass"]
+	state.Status = generate.StatusAccepted
+	state.Review = &generate.ReviewRecord{Status: generate.StatusAccepted, Reason: "looks good", ReviewedAt: "2026-07-03T12:00:00Z"}
+	require.NoError(t, generate.Save(outputDir, "run", manifest))
+
+	result, err := generate.Run(context.Background(), all, provider.Fake{ReferenceSupport: true}, generate.Options{OutputDir: outputDir, RunID: "run", Filter: filter, Force: true})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Generated)
+	updated, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	require.Nil(t, updated.Targets["grass"].Review)
+	require.Len(t, updated.Targets["grass"].ReviewHistory, 1)
+	require.Equal(t, "looks good", updated.Targets["grass"].ReviewHistory[0].Reason)
+}

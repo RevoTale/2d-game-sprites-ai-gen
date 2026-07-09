@@ -3,7 +3,6 @@ package targets
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
@@ -53,7 +52,6 @@ func Expand(p *pack.Pack, theme string) ([]Target, error) {
 			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
@@ -142,7 +140,7 @@ func BuildPrompt(theme string, target Target) string {
 	if target.FrameID != "" {
 		fmt.Fprintf(&b, "# Frame: %s\n%s\n\n", target.FrameID, target.FrameDesc)
 	}
-	fmt.Fprintf(&b, "Generate one independent %dx%d sprite image. Do not compose or crop from a sprite sheet.\n", target.Size.Width, target.Size.Height)
+	fmt.Fprintf(&b, "Generate one independent sprite image for a final %dx%d target. Do not compose or crop from a sprite sheet.\n", target.Size.Width, target.Size.Height)
 	return b.String()
 }
 

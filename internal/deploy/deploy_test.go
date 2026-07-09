@@ -67,3 +67,15 @@ func TestCompleteDeployFailsWhenScopeHasUnacceptedTargets(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "complete deploy blocked")
 }
+
+func TestRenderPathSupportsTargetPlaceholderForStaticVariants(t *testing.T) {
+	path, err := deploy.RenderPath(t.TempDir(), targets.Target{
+		ID:             "grass__season-winter",
+		ObjectID:       "grass",
+		DeployTemplate: "sprites/{target}.png",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "grass__season-winter.png", filepath.Base(path))
+	require.Equal(t, "sprites", filepath.Base(filepath.Dir(path)))
+}

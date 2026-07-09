@@ -1,6 +1,8 @@
 package targets_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
@@ -40,4 +42,37 @@ func targetIDs(all []targets.Target) []string {
 		ids = append(ids, target.ID)
 	}
 	return ids
+}
+
+func TestExpandPreservesFrameArrayOrderWhenExplicitFrameIDsSortDifferently(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
+  "version": 1,
+  "objects": [
+    {
+      "id": "duelist",
+      "description": "A duelist.",
+      "size": { "width": 16, "height": 16 },
+      "animations": [
+        {
+          "id": "attack",
+          "description": "Attack.",
+          "frames": [
+            { "id": "windup", "description": "Windup." },
+            { "id": "contact", "description": "Hit." }
+          ]
+        }
+      ],
+      "deploy": { "pathTemplate": "units/{object}__{animation}__{frame}.png" }
+    }
+  ]
+}`), 0o644))
+	_, all := testkit.LoadTargets(t, dir)
+
+	selected := targets.FilterTargets(all, targets.Filter{Object: "duelist", Animation: "attack"})
+
+	require.Len(t, selected, 2)
+	require.Equal(t, "windup", selected[0].FrameID)
+	require.Equal(t, "contact", selected[1].FrameID)
 }

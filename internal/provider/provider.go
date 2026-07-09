@@ -71,6 +71,20 @@ type OpenAI struct {
 	Client *http.Client
 }
 
+const (
+	openAIMinSquareSide = 1024
+	openAISizeMultiple  = 16
+	openAIMaxEdge       = 3840
+	openAIMaxPixels     = 8294400
+)
+
+type openAIImageRequest struct {
+	Model        string `json:"model"`
+	Prompt       string `json:"prompt"`
+	Size         string `json:"size"`
+	OutputFormat string `json:"output_format"`
+}
+
 func (o OpenAI) SupportsReferences() bool {
 	// V1 uses the Image API generation endpoint. Reference-image editing can be added behind
 	// the same provider interface without changing pack or target contracts.
@@ -96,7 +110,11 @@ func (o OpenAI) Generate(ctx context.Context, req Request) (Result, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	body := map[string]any{"model": model, "prompt": req.Prompt, "size": fmt.Sprintf("%dx%d", req.Size.X, req.Size.Y), "output_format": "png"}
+	providerSize, err := openAIProviderSize(req.Size)
+	if err != nil {
+		return Result{}, err
+	}
+	body := openAIImageRequest{Model: model, Prompt: req.Prompt, Size: fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y), OutputFormat: "png"}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return Result{}, err
@@ -130,5 +148,27 @@ func (o OpenAI) Generate(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{PNG: pngBytes, Metadata: map[string]string{"provider": "openai", "model": model}}, nil
+	return Result{PNG: pngBytes, Metadata: map[string]string{"provider": "openai", "model": model, "providerSize": fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y)}}, nil
+}
+
+func openAIProviderSize(target image.Point) (image.Point, error) {
+	if target.X <= 0 || target.Y <= 0 {
+		return image.Point{}, errors.New("openai provider requires positive target size")
+	}
+	side := max(target.X, target.Y)
+	if side < openAIMinSquareSide {
+		side = openAIMinSquareSide
+	}
+	side = roundUpToMultiple(side, openAISizeMultiple)
+	if side > openAIMaxEdge || side*side > openAIMaxPixels {
+		return image.Point{}, fmt.Errorf("target %dx%d needs provider canvas %dx%d, which exceeds OpenAI image size constraints", target.X, target.Y, side, side)
+	}
+	return image.Pt(side, side), nil
+}
+
+func roundUpToMultiple(value, multiple int) int {
+	if value%multiple == 0 {
+		return value
+	}
+	return value + multiple - value%multiple
 }

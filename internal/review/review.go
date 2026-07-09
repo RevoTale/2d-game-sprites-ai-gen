@@ -50,6 +50,9 @@ func Apply(all []targets.Target, opts Options) (Result, error) {
 			result.SkippedPending++
 			continue
 		}
+		if state.Review != nil {
+			state.ReviewHistory = append(state.ReviewHistory, *state.Review)
+		}
 		state.Status = opts.Status
 		state.Review = &generate.ReviewRecord{Status: opts.Status, Reason: opts.Reason, ReviewedAt: time.Now().UTC().Format(time.RFC3339)}
 		if err := generate.WriteQA(filepath.Join(opts.OutputDir, "runs", opts.RunID, "targets", target.ID), opts.Status, opts.Reason); err != nil {

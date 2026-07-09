@@ -97,9 +97,9 @@ func runGenerate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	gen := provider.Provider(provider.Fake{ReferenceSupport: true})
-	if *providerName == "openai" {
-		gen = provider.OpenAI{}
+	gen, err := newProvider(*providerName)
+	if err != nil {
+		return err
 	}
 	out := generate.OutputDir(p, common.outputOverride)
 	result, err := generate.Run(ctx, all, gen, generate.Options{OutputDir: filepath.Join(common.packDir, out), RunID: common.runID, Filter: common.filter(), Force: *force})
@@ -108,6 +108,17 @@ func runGenerate(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("run: %s\ngenerated: %d\nskipped: %d\n", result.RunID, result.Generated, result.Skipped)
 	return nil
+}
+
+func newProvider(name string) (provider.Provider, error) {
+	switch name {
+	case "fake":
+		return provider.Fake{ReferenceSupport: true}, nil
+	case "openai":
+		return provider.OpenAI{}, nil
+	default:
+		return nil, fmt.Errorf("unknown provider %q", name)
+	}
 }
 
 func runStatus(args []string) error {

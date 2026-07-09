@@ -89,13 +89,24 @@ Deploy templates are relative paths. Path traversal and absolute paths are rejec
 
 Supported placeholders:
 
+- `{target}`: full expanded target ID, including variants, animation, and frame when present.
 - `{object}`
 - `{animation}`
 - `{frame}`
 - `{variant.<axis>}`
 
-Default unit-style template:
+Default static template:
+
+```text
+sprites/{target}.png
+```
+
+Static targets use `{target}` by default so variant combinations deploy to distinct files.
+
+Default animated unit-style template:
 
 ```text
 units/{object}__{animation}__{variant.direction}__{frame}.png
 ```
+
+Override `deploy.pathTemplate` when an animated object does not use a `direction` variant or needs a project-specific layout.

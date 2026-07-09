@@ -34,3 +34,13 @@ func TestE2ECompleteDeployFailsWhenGeneratedPackIsOnlyPartiallyAccepted(t *testi
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "complete deploy blocked")
 }
+
+func TestGenerateRejectsUnknownProviderName(t *testing.T) {
+	packDir := t.TempDir()
+	require.NoError(t, run(context.Background(), []string{"init", "--pack", packDir}))
+
+	err := run(context.Background(), []string{"generate", "--pack", packDir, "--run", "run", "--provider", "typo", "--object", "blood-duelist"})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown provider")
+}

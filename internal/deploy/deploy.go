@@ -91,11 +91,15 @@ func Execute(all []targets.Target, opts Options) (Plan, error) {
 
 func RenderPath(deployDir string, target targets.Target) (string, error) {
 	path := target.DeployTemplate
+	path = strings.ReplaceAll(path, "{target}", target.ID)
 	path = strings.ReplaceAll(path, "{object}", target.ObjectID)
 	path = strings.ReplaceAll(path, "{animation}", target.AnimationID)
 	path = strings.ReplaceAll(path, "{frame}", target.FrameID)
 	for _, variant := range target.Variants {
 		path = strings.ReplaceAll(path, "{variant."+variant.AxisID+"}", variant.ValueID)
+	}
+	if strings.ContainsAny(path, "{}") {
+		return "", fmt.Errorf("deploy path %q contains unresolved placeholders", path)
 	}
 	if filepath.IsAbs(path) || path == "." || strings.HasPrefix(filepath.Clean(path), "..") {
 		return "", fmt.Errorf("deploy path %q is not safely relative", path)

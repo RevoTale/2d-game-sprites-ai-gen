@@ -13,11 +13,15 @@ import (
 )
 
 const (
-	DefaultOutputDir      = "output"
-	DefaultDeployTemplate = "units/{object}__{animation}__{variant.direction}__{frame}.png"
+	DefaultOutputDir              = "output"
+	DefaultStaticDeployTemplate   = "sprites/{target}.png"
+	DefaultAnimatedDeployTemplate = "units/{object}__{animation}__{variant.direction}__{frame}.png"
 )
 
-var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+var (
+	idPattern          = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	placeholderPattern = regexp.MustCompile(`\{([^{}]+)\}`)
+)
 
 type Pack struct {
 	Version    int         `json:"version"`
@@ -139,7 +143,7 @@ func Validate(dir string, p *Pack) error {
 		if err := validateReferences(dir, "object "+obj.ID, obj.References); err != nil {
 			return err
 		}
-		if err := validateRelativePath(DeployTemplate(obj)); err != nil {
+		if err := validateDeployTemplate(obj); err != nil {
 			return fmt.Errorf("object %q deploy template: %w", obj.ID, err)
 		}
 		if err := validateVariants(dir, obj); err != nil {
@@ -148,6 +152,38 @@ func Validate(dir string, p *Pack) error {
 		if err := validateAnimations(dir, obj); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateDeployTemplate(obj Object) error {
+	template := DeployTemplate(obj)
+	if err := validateRelativePath(template); err != nil {
+		return err
+	}
+	axisIDs := map[string]struct{}{}
+	for _, variant := range obj.Variants {
+		axisIDs[variant.ID] = struct{}{}
+	}
+	withoutPlaceholders := placeholderPattern.ReplaceAllString(template, "")
+	if strings.ContainsAny(withoutPlaceholders, "{}") {
+		return fmt.Errorf("malformed deploy placeholder in %q", template)
+	}
+	for _, match := range placeholderPattern.FindAllStringSubmatch(template, -1) {
+		name := match[1]
+		switch {
+		case name == "target" || name == "object" || name == "animation" || name == "frame":
+			continue
+		case strings.HasPrefix(name, "variant."):
+			axis := strings.TrimPrefix(name, "variant.")
+			if axis == "" {
+				return fmt.Errorf("malformed deploy placeholder %q", match[0])
+			}
+			if _, exists := axisIDs[axis]; exists {
+				continue
+			}
+		}
+		return fmt.Errorf("unknown deploy placeholder %q", match[0])
 	}
 	return nil
 }
@@ -249,7 +285,10 @@ func DeployTemplate(obj Object) string {
 	if obj.Deploy.PathTemplate != "" {
 		return obj.Deploy.PathTemplate
 	}
-	return DefaultDeployTemplate
+	if len(obj.Animations) == 0 {
+		return DefaultStaticDeployTemplate
+	}
+	return DefaultAnimatedDeployTemplate
 }
 
 func validateID(kind, id string) error {

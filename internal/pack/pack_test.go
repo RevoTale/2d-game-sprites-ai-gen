@@ -37,7 +37,8 @@ func TestValidateRejectsDuplicateExplicitFrameIDs(t *testing.T) {
             { "id": "hit", "description": "Two." }
           ]
         }
-      ]
+      ],
+      "deploy": { "pathTemplate": "units/{object}__{animation}__{frame}.png" }
     }
   ]
 }`), 0o644))
@@ -56,4 +57,75 @@ func TestLoadAcceptsFixturePack(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, theme, "smooth pixel art")
 	require.Len(t, p.Objects, 2)
+}
+
+func TestValidateRejectsUnknownDeployTemplatePlaceholders(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
+  "version": 1,
+  "objects": [
+    {
+      "id": "duelist",
+      "description": "A duelist.",
+      "size": { "width": 16, "height": 16 },
+      "deploy": { "pathTemplate": "units/{object}__{unknown}.png" }
+    }
+  ]
+}`), 0o644))
+
+	_, _, err := pack.Load(dir)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown deploy placeholder")
+}
+
+func TestLoadAcceptsStaticObjectWithoutExplicitDeployTemplate(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
+  "version": 1,
+  "objects": [
+    {
+      "id": "grass",
+      "description": "A grass tile.",
+      "size": { "width": 16, "height": 16 }
+    }
+  ]
+}`), 0o644))
+
+	p, _, err := pack.Load(dir)
+
+	require.NoError(t, err)
+	require.Equal(t, "sprites/{target}.png", pack.DeployTemplate(p.Objects[0]))
+}
+
+func TestLoadAcceptsStaticVariantObjectWithoutExplicitDeployTemplate(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
+  "version": 1,
+  "objects": [
+    {
+      "id": "grass",
+      "description": "A grass tile.",
+      "size": { "width": 16, "height": 16 },
+      "variants": [
+        {
+          "id": "season",
+          "description": "Seasonal tile variant.",
+          "values": [
+            { "id": "summer", "description": "Summer grass." },
+            { "id": "winter", "description": "Winter grass." }
+          ]
+        }
+      ]
+    }
+  ]
+}`), 0o644))
+
+	p, _, err := pack.Load(dir)
+
+	require.NoError(t, err)
+	require.Equal(t, "sprites/{target}.png", pack.DeployTemplate(p.Objects[0]))
 }
