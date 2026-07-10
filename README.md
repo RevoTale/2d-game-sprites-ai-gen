@@ -18,6 +18,7 @@ sprites-ai-gen sheet --pack . --run 2026-07-03-m0847 --object blood-duelist
 sprites-ai-gen review --pack . --run 2026-07-03-m0847 --object blood-duelist --status accepted
 sprites-ai-gen deploy-plan --pack . --run 2026-07-03-m0847
 sprites-ai-gen deploy --pack . --run 2026-07-03-m0847
+sprites-ai-gen git-guard --pack .
 ```
 
 ## Command Flow
@@ -38,7 +39,7 @@ sprites-ai-gen generate --pack . --run auto
 sprites-ai-gen status --pack . --run 2026-07-03-m0847
 ```
 
-`generate` creates or resumes a run and fills only missing matched targets. Static sprites, generic variants, animations, and frames all expand from `sprites.json`. Providers may return larger raw canvases; the CLI aspect-fits each target into the exact configured sprite size. `status` shows what is still pending, generated, accepted, rejected, deployed, or missing local artifacts.
+`generate` creates or resumes a run and fills only missing matched targets. For real AI generation, set `OPENAI_API_KEY`, set `SPRITES_AI_GEN_PROVIDER=openai`, or pass `--provider openai` when you want to require OpenAI explicitly. Use `--fake` only for deterministic plumbing checks and tests. Static sprites, generic variants, animations, and frames all expand from `sprites.json`. Providers may return larger raw canvases; the CLI aspect-fits each target into the exact configured sprite size. `status` shows what is still pending, generated, accepted, rejected, deployed, or missing local artifacts.
 
 ### Review the Images
 
@@ -61,10 +62,12 @@ sprites-ai-gen deploy --pack . --run 2026-07-03-m0847
 ### Clean Local Attempts
 
 ```bash
+sprites-ai-gen git-guard --pack .
 sprites-ai-gen prune --pack . --run 2026-07-03-m0847 --only-raw
 ```
 
-`prune --only-raw` removes raw generated attempts after prompt, QA, and manifest metadata are preserved.
+`git-guard` fails if generated PNG artifacts under the pack output directory are tracked or staged. `prune --only-raw`
+removes raw generated attempts after prompt, QA, and manifest metadata are preserved.
 
 ## Scoped Generation
 

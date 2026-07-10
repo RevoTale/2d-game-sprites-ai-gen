@@ -11,11 +11,18 @@ This document describes the sprite draft lifecycle and run artifacts.
 5. `review` records visual QA decisions.
 6. `deploy-plan` previews what accepted targets would replace and what non-accepted targets would leave unchanged.
 7. `deploy` copies only accepted target images.
-8. `prune --only-raw` removes raw attempt files after metadata is preserved.
+8. `git-guard` fails if generated PNG artifacts under the managed output directory are tracked or staged.
+9. `prune --only-raw` removes raw attempt files after metadata is preserved.
 
 Every expanded target is generated as an independent image. Sheets are review artifacts only and are never cropped into frame sources.
 
 Providers may generate a larger square canvas when their API cannot produce the configured sprite size directly. In that case `raw-candidate.png` preserves the provider output, and `normalized.png` is aspect-fit and transparent-padded to the exact target size for review and deploy.
+
+Provider selection is strict. `--fake` is the only fake-provider path and should be used only for deterministic plumbing
+checks and tests. Real generation uses `--provider openai`, `SPRITES_AI_GEN_PROVIDER=openai`, or automatic OpenAI
+detection when `OPENAI_API_KEY` is present. A pack-local `.env` may provide these values, and process environment values
+win over `.env` values. When references are present, the OpenAI provider uses the image edits endpoint so required
+visual anchors are sent as image inputs instead of being silently ignored.
 
 ## Run Output
 
@@ -63,3 +70,8 @@ Partial deploy is the default. Accepted targets are copied, and non-accepted tar
 Use `deploy --complete` when every target in the selected scope must be accepted before any file is copied.
 
 Use `deploy-plan` or `deploy --dry-run` before deploying a mixed run. The plan reports the exact files that will be replaced and the exact files that will stay unchanged.
+
+## Git Guard
+
+Generated PNGs are local artifacts by default. Run `git-guard --pack <pack>` before commit or review to catch tracked or
+staged PNGs under the pack output directory.

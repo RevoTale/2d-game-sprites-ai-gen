@@ -11,8 +11,12 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 type Reference struct {
@@ -86,21 +90,16 @@ type openAIImageRequest struct {
 }
 
 func (o OpenAI) SupportsReferences() bool {
-	// V1 uses the Image API generation endpoint. Reference-image editing can be added behind
-	// the same provider interface without changing pack or target contracts.
-	return false
+	return true
 }
 
 func (o OpenAI) Generate(ctx context.Context, req Request) (Result, error) {
 	apiKey := o.APIKey
 	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
+		apiKey = os.Getenv(EnvOpenAIAPIKey)
 	}
 	if apiKey == "" {
-		return Result{}, errors.New("OPENAI_API_KEY is required")
-	}
-	if len(req.References) > 0 {
-		return Result{}, errors.New("openai generation provider does not support reference images yet")
+		return Result{}, fmt.Errorf("%s is required", EnvOpenAIAPIKey)
 	}
 	model := o.Model
 	if model == "" {
@@ -114,6 +113,13 @@ func (o OpenAI) Generate(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if len(req.References) > 0 {
+		return o.generateEdit(ctx, client, apiKey, model, req, providerSize)
+	}
+	return o.generateFromPrompt(ctx, client, apiKey, model, req, providerSize)
+}
+
+func (o OpenAI) generateFromPrompt(ctx context.Context, client *http.Client, apiKey, model string, req Request, providerSize image.Point) (Result, error) {
 	body := openAIImageRequest{Model: model, Prompt: req.Prompt, Size: fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y), OutputFormat: "png"}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -133,22 +139,104 @@ func (o OpenAI) Generate(ctx context.Context, req Request) (Result, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return Result{}, fmt.Errorf("openai image generation failed: %s", resp.Status)
 	}
+	pngBytes, err := decodeImageResponse(resp.Body)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{PNG: pngBytes, Metadata: map[string]string{"provider": "openai", "model": model, "providerSize": fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y), "endpoint": "generations"}}, nil
+}
+
+func (o OpenAI) generateEdit(ctx context.Context, client *http.Client, apiKey, model string, req Request, providerSize image.Point) (Result, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("model", model); err != nil {
+		return Result{}, err
+	}
+	if err := writer.WriteField("prompt", promptWithReferenceDescriptions(req.Prompt, req.References)); err != nil {
+		return Result{}, err
+	}
+	if err := writer.WriteField("size", fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y)); err != nil {
+		return Result{}, err
+	}
+	if err := writer.WriteField("output_format", "png"); err != nil {
+		return Result{}, err
+	}
+	for _, ref := range req.References {
+		if err := addReferenceImage(writer, ref); err != nil {
+			return Result{}, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return Result{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/images/edits", &body)
+	if err != nil {
+		return Result{}, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return Result{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return Result{}, fmt.Errorf("openai image edit failed: %s", resp.Status)
+	}
+	pngBytes, err := decodeImageResponse(resp.Body)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{PNG: pngBytes, Metadata: map[string]string{"provider": "openai", "model": model, "providerSize": fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y), "endpoint": "edits"}}, nil
+}
+
+func addReferenceImage(writer *multipart.Writer, ref Reference) error {
+	file, err := os.Open(ref.Path)
+	if err != nil {
+		return fmt.Errorf("open reference %q: %w", ref.Path, err)
+	}
+	defer file.Close()
+	part, err := writer.CreateFormFile("image[]", filepath.Base(ref.Path))
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return fmt.Errorf("copy reference %q: %w", ref.Path, err)
+	}
+	return nil
+}
+
+func promptWithReferenceDescriptions(prompt string, refs []Reference) string {
+	var b strings.Builder
+	b.WriteString(prompt)
+	b.WriteString("\n\n# Image References\n")
+	for i, ref := range refs {
+		fmt.Fprintf(&b, "%02d. %s", i+1, filepath.Base(ref.Path))
+		if ref.Description != "" {
+			fmt.Fprintf(&b, ": %s", ref.Description)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func decodeImageResponse(body io.Reader) ([]byte, error) {
 	var decoded struct {
 		Data []struct {
 			B64JSON string `json:"b64_json"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return Result{}, err
+	if err := json.NewDecoder(body).Decode(&decoded); err != nil {
+		return nil, err
 	}
 	if len(decoded.Data) == 0 || decoded.Data[0].B64JSON == "" {
-		return Result{}, errors.New("openai image generation returned no image")
+		return nil, errors.New("openai image generation returned no image")
 	}
 	pngBytes, err := base64.StdEncoding.DecodeString(decoded.Data[0].B64JSON)
 	if err != nil {
-		return Result{}, err
+		return nil, err
 	}
-	return Result{PNG: pngBytes, Metadata: map[string]string{"provider": "openai", "model": model, "providerSize": fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y)}}, nil
+	return pngBytes, nil
 }
 
 func openAIProviderSize(target image.Point) (image.Point, error) {

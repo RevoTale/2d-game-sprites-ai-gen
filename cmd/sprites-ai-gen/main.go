@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/deploy"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/envfile"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/generate"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/gitguard"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/imageio"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/provider"
@@ -57,6 +59,8 @@ func run(ctx context.Context, args []string) error {
 		return runDeploy(args[1:], false)
 	case "prune":
 		return runPrune(args[1:])
+	case "git-guard":
+		return runGitGuard(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -70,7 +74,7 @@ func runInit(args []string) error {
 	}
 	files := map[string]string{
 		"THEME.md":     "# Theme\n\nHigh-detail pixel art with clean readable silhouettes.\n",
-		".env.example": "OPENAI_API_KEY=\n",
+		".env.example": "SPRITES_AI_GEN_PROVIDER=openai\nOPENAI_API_KEY=\n",
 		".gitignore":   ".env\n.env.*\n!.env.example\noutput/\n",
 		"sprites.json": starterSpritesJSON,
 	}
@@ -88,7 +92,8 @@ func runInit(args []string) error {
 
 func runGenerate(ctx context.Context, args []string) error {
 	fs, common := commonFlags("generate")
-	providerName := fs.String("provider", "fake", "provider: fake or openai")
+	providerName := fs.String("provider", "", "real provider: openai; auto-detects from provider env when omitted")
+	fake := fs.Bool("fake", false, "use deterministic fake provider for tests and plumbing checks")
 	force := fs.Bool("force", false, "regenerate accepted/deployed targets")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -97,10 +102,15 @@ func runGenerate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	gen, err := newProvider(*providerName)
+	env, err := generateEnvironment(common.packDir)
 	if err != nil {
 		return err
 	}
+	gen, err := provider.Select(provider.SelectionOptions{ExplicitName: *providerName, Fake: *fake, Env: env})
+	if err != nil {
+		return err
+	}
+	all = resolveReferencePaths(all, common.packDir)
 	out := generate.OutputDir(p, common.outputOverride)
 	result, err := generate.Run(ctx, all, gen, generate.Options{OutputDir: filepath.Join(common.packDir, out), RunID: common.runID, Filter: common.filter(), Force: *force})
 	if err != nil {
@@ -110,15 +120,22 @@ func runGenerate(ctx context.Context, args []string) error {
 	return nil
 }
 
-func newProvider(name string) (provider.Provider, error) {
-	switch name {
-	case "fake":
-		return provider.Fake{ReferenceSupport: true}, nil
-	case "openai":
-		return provider.OpenAI{}, nil
-	default:
-		return nil, fmt.Errorf("unknown provider %q", name)
+func generateEnvironment(packDir string) (map[string]string, error) {
+	return envfile.Merge(os.Environ(), filepath.Join(packDir, ".env"))
+}
+
+func resolveReferencePaths(all []targets.Target, packDir string) []targets.Target {
+	out := append([]targets.Target(nil), all...)
+	for i := range out {
+		refs := append([]pack.Reference(nil), out[i].References...)
+		for j := range refs {
+			if refs[j].Path != "" && !filepath.IsAbs(refs[j].Path) {
+				refs[j].Path = filepath.Join(packDir, refs[j].Path)
+			}
+		}
+		out[i].References = refs
 	}
+	return out
 }
 
 func runStatus(args []string) error {
@@ -249,6 +266,30 @@ func runPrune(args []string) error {
 		}
 	}
 	return nil
+}
+
+func runGitGuard(args []string) error {
+	fs, common := commonFlags("git-guard")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	p, _, _, err := loadTargetsFromCommon(common)
+	if err != nil {
+		return err
+	}
+	outputDir := filepath.Join(common.packDir, generate.OutputDir(p, common.outputOverride))
+	offenders, err := gitguard.Check(outputDir)
+	if err != nil {
+		return err
+	}
+	if len(offenders) == 0 {
+		fmt.Println("no generated PNG artifacts are tracked or staged")
+		return nil
+	}
+	for _, path := range offenders {
+		fmt.Println(path)
+	}
+	return fmt.Errorf("%d generated PNG artifacts are tracked or staged", len(offenders))
 }
 
 type commonOptions struct {

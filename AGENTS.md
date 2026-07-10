@@ -32,6 +32,10 @@
 - MUST make `deploy` copy only accepted target images.
 - MUST make `deploy-plan` and `deploy --dry-run` show exactly what would be replaced and what would remain unchanged.
 - MUST fail required references when the provider cannot use image references.
+- MUST keep the fake provider behind the explicit `--fake` CLI flag only. Do not allow fake generation through
+  `--provider`, `SPRITES_AI_GEN_PROVIDER`, or provider auto-detection.
+- MUST select real providers either from explicit `--provider <name>` or from provider-specific environment such as
+  `OPENAI_API_KEY`, with clear errors when required provider env is missing.
 - MUST make tests describe the exact behavior under test in their names and assertions.
 - MUST document package responsibility and invariants in package comments or nearby README files.
 

@@ -127,7 +127,7 @@ func Run(ctx context.Context, all []targets.Target, gen provider.Provider, opts 
 		if err := os.WriteFile(filepath.Join(targetDir, "prompt.md"), []byte(target.Prompt), 0o644); err != nil {
 			return result, err
 		}
-		providerResult, err := gen.Generate(ctx, provider.Request{Prompt: target.Prompt, Size: image.Pt(target.Size.Width, target.Size.Height), References: providerRefs(target)})
+		providerResult, err := gen.Generate(ctx, provider.Request{Prompt: target.Prompt, Size: image.Pt(target.Size.Width, target.Size.Height), References: providerRefs(target, gen)})
 		if err != nil {
 			return result, err
 		}
@@ -236,7 +236,10 @@ func ensureReferenceSupport(target targets.Target, gen provider.Provider) error 
 	return nil
 }
 
-func providerRefs(target targets.Target) []provider.Reference {
+func providerRefs(target targets.Target, gen provider.Provider) []provider.Reference {
+	if !gen.SupportsReferences() {
+		return nil
+	}
 	refs := make([]provider.Reference, 0, len(target.References))
 	for _, ref := range target.References {
 		refs = append(refs, provider.Reference{Path: ref.Path, Description: ref.Description, Required: ref.Required})

@@ -35,6 +35,16 @@ func TestGenerateFailsRequiredReferencesWhenProviderDoesNotSupportReferences(t *
 	require.Contains(t, err.Error(), "provider does not support references")
 }
 
+func TestGenerateDropsOptionalReferencesWhenProviderDoesNotSupportReferences(t *testing.T) {
+	target := targets.Target{ID: "duelist", Size: pack.Size{Width: 16, Height: 16}, References: []pack.Reference{{Path: "style.png", Description: "Optional style reference."}}}
+	gen := noReferenceProvider{}
+
+	result, err := generate.Run(context.Background(), []targets.Target{target}, gen, generate.Options{OutputDir: t.TempDir(), RunID: "run"})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Generated)
+}
+
 func TestGenerateSkipsAcceptedTargetsWithoutForce(t *testing.T) {
 	dir := testkit.WritePack(t)
 	p, all := testkit.LoadTargets(t, dir)
@@ -79,4 +89,15 @@ func TestGenerateWithForcePreservesPreviousReviewHistory(t *testing.T) {
 	require.Nil(t, updated.Targets["grass"].Review)
 	require.Len(t, updated.Targets["grass"].ReviewHistory, 1)
 	require.Equal(t, "looks good", updated.Targets["grass"].ReviewHistory[0].Reason)
+}
+
+type noReferenceProvider struct{}
+
+func (noReferenceProvider) SupportsReferences() bool { return false }
+
+func (noReferenceProvider) Generate(_ context.Context, req provider.Request) (provider.Result, error) {
+	if len(req.References) > 0 {
+		return provider.Result{}, os.ErrInvalid
+	}
+	return provider.Fake{ReferenceSupport: false}.Generate(context.Background(), req)
 }
