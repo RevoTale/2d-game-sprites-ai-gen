@@ -2,7 +2,7 @@
 .env.*
 !.env.example
 
-output/
+/output/
 dist/
 coverage.out
 *.log

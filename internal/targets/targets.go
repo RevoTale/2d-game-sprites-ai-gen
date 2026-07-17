@@ -2,9 +2,12 @@
 package targets
 
 import (
+	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/conditioning"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 )
 
@@ -14,11 +17,13 @@ type Target struct {
 	ObjectDesc     string
 	AnimationID    string
 	AnimationDesc  string
+	AnimationIndex int
 	FrameID        string
 	FrameDesc      string
+	FrameIndex     int
 	Size           pack.Size
 	Variants       []VariantSelection
-	References     []pack.Reference
+	Inputs         []conditioning.Input
 	DeployTemplate string
 	Prompt         string
 }
@@ -42,12 +47,12 @@ func Expand(p *pack.Pack, theme string) ([]Target, error) {
 		combos := variantCombos(obj.Variants)
 		for _, combo := range combos {
 			if len(obj.Animations) == 0 {
-				out = append(out, makeTarget(p, obj, combo, pack.Animation{}, -1, pack.Frame{}, theme))
+				out = append(out, makeTarget(p, obj, combo, pack.Animation{}, -1, -1, pack.Frame{}, theme))
 				continue
 			}
-			for _, animation := range obj.Animations {
+			for animationIndex, animation := range obj.Animations {
 				for i, frame := range animation.Frames {
-					out = append(out, makeTarget(p, obj, combo, animation, i, frame, theme))
+					out = append(out, makeTarget(p, obj, combo, animation, animationIndex, i, frame, theme))
 				}
 			}
 		}
@@ -90,18 +95,82 @@ func FilterTargets(all []Target, filter Filter) []Target {
 	return out
 }
 
-func makeTarget(p *pack.Pack, obj pack.Object, variants []variantComboValue, animation pack.Animation, frameIndex int, frame pack.Frame, theme string) Target {
+// Select validates a selector and expands an animated frame match to its
+// complete action/variant row. Static matches remain target-atomic.
+func Select(all []Target, filter Filter) ([]Target, error) {
+	matched := FilterTargets(all, filter)
+	if len(matched) == 0 {
+		return nil, errors.New("no targets matched selector")
+	}
+	if filter.Frame == "" {
+		return matched, nil
+	}
+	rows := map[string]bool{}
+	statics := map[string]bool{}
+	for _, target := range matched {
+		if target.AnimationID == "" {
+			statics[target.ID] = true
+			continue
+		}
+		rows[RowKey(target)] = true
+	}
+	selected := make([]Target, 0, len(matched))
+	for _, target := range all {
+		if statics[target.ID] || (target.AnimationID != "" && rows[RowKey(target)]) {
+			selected = append(selected, target)
+		}
+	}
+	return selected, nil
+}
+
+// RowKey identifies the action/variant row that owns an animated frame.
+func RowKey(target Target) string {
+	var b strings.Builder
+	b.WriteString(target.ObjectID)
+	b.WriteByte('\x00')
+	b.WriteString(target.AnimationID)
+	for _, variant := range target.Variants {
+		b.WriteByte('\x00')
+		b.WriteString(variant.AxisID)
+		b.WriteByte('=')
+		b.WriteString(variant.ValueID)
+	}
+	return b.String()
+}
+
+// AtomicGroups returns static targets individually and animated targets as
+// complete rows while preserving selector order.
+func AtomicGroups(selected []Target) [][]Target {
+	indexes := map[string]int{}
+	groups := make([][]Target, 0, len(selected))
+	for _, target := range selected {
+		key := "static\x00" + target.ID
+		if target.AnimationID != "" {
+			key = "row\x00" + RowKey(target)
+		}
+		index, ok := indexes[key]
+		if !ok {
+			index = len(groups)
+			indexes[key] = index
+			groups = append(groups, nil)
+		}
+		groups[index] = append(groups[index], target)
+	}
+	return groups
+}
+
+func makeTarget(p *pack.Pack, obj pack.Object, variants []variantComboValue, animation pack.Animation, animationIndex, frameIndex int, frame pack.Frame, theme string) Target {
 	parts := []string{obj.ID}
-	refs := append([]pack.Reference{}, p.References...)
-	refs = append(refs, obj.References...)
+	inputs := roleInputs(conditioning.RoleStyle, p.References)
+	inputs = append(inputs, roleInputs(conditioning.RoleIdentity, obj.References)...)
 	var selections []VariantSelection
 	if animation.ID != "" {
 		parts = append(parts, animation.ID)
-		refs = append(refs, animation.References...)
+		inputs = append(inputs, roleInputs(conditioning.RolePose, animation.References)...)
 	}
 	for _, variant := range variants {
-		refs = append(refs, variant.AxisRefs...)
-		refs = append(refs, variant.ValueRefs...)
+		inputs = append(inputs, roleInputs(conditioning.RolePose, variant.AxisRefs)...)
+		inputs = append(inputs, roleInputs(conditioning.RolePose, variant.ValueRefs)...)
 		selections = append(selections, VariantSelection{AxisID: variant.AxisID, ValueID: variant.ValueID, Description: variant.Description})
 		parts = append(parts, variant.AxisID+"-"+variant.ValueID)
 	}
@@ -109,7 +178,7 @@ func makeTarget(p *pack.Pack, obj pack.Object, variants []variantComboValue, ani
 	if frameIndex >= 0 {
 		frameID = pack.FrameID(frameIndex, frame)
 		parts = append(parts, frameID)
-		refs = append(refs, frame.References...)
+		inputs = append(inputs, roleInputs(conditioning.RolePose, frame.References)...)
 	}
 	target := Target{
 		ID:             strings.Join(parts, "__"),
@@ -117,15 +186,25 @@ func makeTarget(p *pack.Pack, obj pack.Object, variants []variantComboValue, ani
 		ObjectDesc:     obj.Description,
 		AnimationID:    animation.ID,
 		AnimationDesc:  animation.Description,
+		AnimationIndex: animationIndex,
 		FrameID:        frameID,
 		FrameDesc:      frame.Description,
+		FrameIndex:     frameIndex,
 		Size:           obj.Size,
 		Variants:       selections,
-		References:     refs,
+		Inputs:         inputs,
 		DeployTemplate: pack.DeployTemplate(obj),
 	}
 	target.Prompt = BuildPrompt(theme, target)
 	return target
+}
+
+func roleInputs(role conditioning.Role, refs []pack.Reference) []conditioning.Input {
+	out := make([]conditioning.Input, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, conditioning.Input{Role: role, Path: ref.Path, Description: ref.Description, Required: ref.Required})
+	}
+	return out
 }
 
 func BuildPrompt(theme string, target Target) string {
@@ -142,6 +221,28 @@ func BuildPrompt(theme string, target Target) string {
 	}
 	fmt.Fprintf(&b, "Generate one independent sprite image for a final %dx%d target. Do not compose or crop from a sprite sheet.\n", target.Size.Width, target.Size.Height)
 	return b.String()
+}
+
+// DeployPath resolves a target's configured output path below deployDir.
+func DeployPath(deployDir string, target Target) (string, error) {
+	path := target.DeployTemplate
+	path = strings.ReplaceAll(path, "{target}", target.ID)
+	path = strings.ReplaceAll(path, "{object}", target.ObjectID)
+	path = strings.ReplaceAll(path, "{animation}", target.AnimationID)
+	path = strings.ReplaceAll(path, "{frame}", target.FrameID)
+	for _, variant := range target.Variants {
+		path = strings.ReplaceAll(path, "{variant."+variant.AxisID+"}", variant.ValueID)
+	}
+	if strings.ContainsAny(path, "{}") {
+		return "", fmt.Errorf("deploy path %q contains unresolved placeholders", path)
+	}
+	if filepath.IsAbs(path) || path == "." || strings.HasPrefix(filepath.Clean(path), "..") {
+		return "", fmt.Errorf("deploy path %q is not safely relative", path)
+	}
+	if strings.TrimSpace(deployDir) == "" {
+		return "", errors.New("deploy directory is required")
+	}
+	return filepath.Join(deployDir, path), nil
 }
 
 type variantComboValue struct {

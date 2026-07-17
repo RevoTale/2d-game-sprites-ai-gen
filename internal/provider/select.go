@@ -9,6 +9,7 @@ import (
 const (
 	EnvProvider     = "SPRITES_AI_GEN_PROVIDER"
 	EnvOpenAIAPIKey = "OPENAI_API_KEY"
+	EnvOpenAIModel  = "SPRITES_AI_GEN_OPENAI_MODEL"
 
 	NameOpenAI = "openai"
 )
@@ -24,7 +25,7 @@ func Select(opts SelectionOptions) (Provider, error) {
 		if strings.TrimSpace(opts.ExplicitName) != "" {
 			return nil, fmt.Errorf("--fake cannot be used with --provider")
 		}
-		return Fake{ReferenceSupport: true}, nil
+		return Fake{}, nil
 	}
 	if name := strings.TrimSpace(opts.ExplicitName); name != "" {
 		return selectNamedProvider(name, opts)
@@ -33,9 +34,9 @@ func Select(opts SelectionOptions) (Provider, error) {
 		return selectNamedProvider(name, opts)
 	}
 	if apiKey := strings.TrimSpace(envValue(opts, EnvOpenAIAPIKey)); apiKey != "" {
-		return OpenAI{APIKey: apiKey}, nil
+		return OpenAI{APIKey: apiKey, Model: strings.TrimSpace(envValue(opts, EnvOpenAIModel))}, nil
 	}
-	return nil, fmt.Errorf("provider is required: pass --provider openai, set %s=openai, set %s, or pass --fake for deterministic tests", EnvProvider, EnvOpenAIAPIKey)
+	return nil, fmt.Errorf("provider is required: pass --provider %s, set %s, configure %s, or pass --fake for deterministic tests", NameOpenAI, EnvProvider, EnvOpenAIAPIKey)
 }
 
 func selectNamedProvider(name string, opts SelectionOptions) (Provider, error) {
@@ -45,7 +46,7 @@ func selectNamedProvider(name string, opts SelectionOptions) (Provider, error) {
 		if apiKey == "" {
 			return nil, fmt.Errorf("%s is required for provider %q", EnvOpenAIAPIKey, NameOpenAI)
 		}
-		return OpenAI{APIKey: apiKey}, nil
+		return OpenAI{APIKey: apiKey, Model: strings.TrimSpace(envValue(opts, EnvOpenAIModel))}, nil
 	case "fake":
 		return nil, fmt.Errorf("fake provider is only available through --fake")
 	default:

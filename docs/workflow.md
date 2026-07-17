@@ -1,77 +1,66 @@
 # Workflow
 
-This document describes the sprite draft lifecycle and run artifacts.
-
 ## Lifecycle
 
-1. `init` creates a minimal sprite pack.
-2. `validate` proves `THEME.md`, `sprites.json`, references, target expansion, and path templates are valid.
-3. `generate` creates or resumes a run and generates only matched pending targets.
-4. `sheet` assembles review sheets from normalized target images.
-5. `review` records visual QA decisions.
-6. `deploy-plan` previews what accepted targets would replace and what non-accepted targets would leave unchanged.
-7. `deploy` copies only accepted target images.
-8. `git-guard` fails if generated PNG artifacts under the managed output directory are tracked or staged.
-9. `prune --only-raw` removes raw attempt files after metadata is preserved.
+1. `init` creates a minimal pack.
+2. `validate` checks schema, references, deploy paths, expansion, and managed output structure.
+3. The first animated `generate` creates or resumes a manifest-V5 run and produces three combined directional seed boards.
+4. `status` reports eligible, invalid, and mechanically preferred seed candidates; the labeled candidate sheet remains
+   subject to mandatory visual review.
+5. `review --candidate <id> --status accepted` approves one mechanically eligible complete seed board.
+6. Repeating `generate` produces one complete animation-row candidate with every frame assigned to an exact fixed
+   column, validates the row, extracts frames, and writes review artifacts automatically.
+7. Final `review` records accepted or rejected complete-row/static QA.
+8. `deploy --dry-run` optionally reports rows or static targets that would be replaced, skipped, or blocked.
+9. `deploy` stages accepted files and replaces them atomically by animated row or static target.
+10. `git-guard` rejects tracked or staged draft PNGs; `prune --only-raw` removes raw provider evidence only.
 
-Every expanded target is generated as an independent image. Sheets are review artifacts only and are never cropped into frame sources.
-
-Providers may generate a larger square canvas when their API cannot produce the configured sprite size directly. In that case `raw-candidate.png` preserves the provider output, and `normalized.png` is aspect-fit and transparent-padded to the exact target size for review and deploy.
-
-Provider selection is strict. `--fake` is the only fake-provider path and should be used only for deterministic plumbing
-checks and tests. Real generation uses `--provider openai`, `SPRITES_AI_GEN_PROVIDER=openai`, or automatic OpenAI
-detection when `OPENAI_API_KEY` is present. A pack-local `.env` may provide these values, and process environment values
-win over `.env` values. When references are present, the OpenAI provider uses the image edits endpoint so required
-visual anchors are sent as image inputs instead of being silently ignored.
+OpenAI is selected through `SPRITES_AI_GEN_PROVIDER=openai` or `OPENAI_API_KEY`. The fake provider is available only
+through `--fake` for deterministic tests.
 
 ## Run Output
 
-Managed output lives under `output/runs/<run-id>/` by default:
-
 ```text
-output/
-  runs/
-    2026-07-03-m0847/
-      manifest.json
-      targets/
-        blood-duelist__attack__direction-right__contact/
-          prompt.md
-          qa.md
-          normalized.png
-          attempts/
-            001/
-              raw-candidate.png
-      contact-sheets/
-        blood-duelist.png
+output/runs/<run-id>/
+  manifest.json
+  intermediates/<object>/direction-seeds/
+    source-board.png
+    normalized.png
+    edit-source.png
+    seeds/<variant>.png
+    attempts/<attempt>/candidates/<candidate>/
+  intermediates/<object>/animations/<animation>/<variant>/row/
+    pose-board.png
+    normalized.png
+    edit-source.png
+    attempts/<attempt>/candidates/<candidate>/
+  targets/<target-id>/
+    qa.md
+    normalized.png
+    palette.json
+  contact-sheets/
+  animations/
 ```
 
-`raw-candidate.png` is provider evidence. `normalized.png` is the deployment candidate. Only accepted normalized target images are copied by `deploy`.
+Manifest V5 records current seed/row attempts, candidate evidence, fixed layouts, reference and production hashes,
+lineage, reviews, and deployment evidence. V1-V4 run directories remain untouched but commands require a new run.
 
-## Status Lifecycle
+## Review And Deploy
+
+Directional seeds, complete rows, and static targets follow:
 
 ```text
-pending -> generated -> accepted -> deployed
-                    \-> rejected -> generated
+pending -> awaiting_review -> accepted -> deployed
+                           \-> rejected -> awaiting_review (with --force)
 ```
 
-Accepted and deployed targets are protected from regeneration unless `--force` is used. When `--force` creates a new attempt, old attempt and review history remains in `manifest.json`.
+Rejected reviews require a reason. Acceptance without a reason records a default manual-review note. A frame repair
+regenerates and resets the complete row. Static targets deploy independently. Animated targets deploy only as complete
+accepted rows whose frames share current seed/row lineage and generation-start production hashes. Pending, rejected,
+stale, and already-deployed groups remain unchanged.
 
-## Review Rules
+Directional-seed acceptance requires a mechanically eligible candidate ID. When every seed candidate is invalid,
+`status` reports an object-wide seed rejection command; rejection requires a reason but no candidate. The rejected seed
+can then be regenerated only with the exact scoped `generate --force` command reported by `status`.
 
-- `accepted` can omit `--reason`.
-- `rejected` requires `--reason`.
-- Bulk accept writes a default audit note when no reason is provided.
-- Pending or missing targets are skipped during broad review and make the command fail unless `--allow-partial` is set.
-
-## Deploy Rules
-
-Partial deploy is the default. Accepted targets are copied, and non-accepted targets are left unchanged.
-
-Use `deploy --complete` when every target in the selected scope must be accepted before any file is copied.
-
-Use `deploy-plan` or `deploy --dry-run` before deploying a mixed run. The plan reports the exact files that will be replaced and the exact files that will stay unchanged.
-
-## Git Guard
-
-Generated PNGs are local artifacts by default. Run `git-guard --pack <pack>` before commit or review to catch tracked or
-staged PNGs under the pack output directory.
+`prune --only-raw` preserves accepted seeds, selected row correction canvases, extracted targets, and lineage.

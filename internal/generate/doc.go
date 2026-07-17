@@ -1,7 +1,7 @@
 // Package generate owns draft run state and provider-backed target generation.
 //
-// A run is resumable and represented by manifest.json plus target folders.
-// Generation writes prompt evidence, a raw provider candidate, a normalized PNG
-// candidate, and QA metadata. Accepted or deployed targets are skipped unless
-// Force is set, which prevents accidental replacement of reviewed work.
+// A manifest-v5 run stores combined directional seed boards, accepted seed
+// lineage, complete animation-row attempts, fixed-cell extraction evidence, and
+// immutable selected-row lineage. Manifest-v1 through manifest-v4 runs may
+// remain on disk but are unsupported by commands.
 package generate

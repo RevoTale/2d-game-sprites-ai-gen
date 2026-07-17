@@ -12,6 +12,7 @@ A sprite pack contains `THEME.md` and `sprites.json`.
 - `variants` are generic axes such as `direction`, `skin`, `growth`, or `material`.
 - Variant axes are recombined as a cross product.
 - `frames[]` order is animation order.
+- `animations[]` and `frames[]` order define directional seed cells and complete animation-row cells.
 - `frames[].description` is required.
 - `frames[].id` is optional; missing IDs derive from array indexes as `00`, `01`, `02`, and so on.
 - Target IDs and default deploy filenames use `__` as the delimiter.
@@ -79,9 +80,25 @@ A sprite pack contains `THEME.md` and `sprites.json`.
 
 ## Reference Images
 
-References can be declared at broad or specific levels. The generator merges references from broader to more specific scopes.
+References can be declared at broad or specific levels. Ownership determines the internal role without changing the
+schema: pack references are style; object references are identity; variant, animation, and frame references are pose.
+The matching existing deploy target is added automatically as the authoritative migration pose and palette source.
 
-Required references fail generation when the provider cannot use image inputs. This prevents the CLI from silently ignoring important visual guidance.
+Required roles fail before provider execution when unsupported. Broad pack style references are used to establish the
+combined directional seed board and are omitted from later animation-row requests.
+
+## Animated Consistency
+
+Array order provides the consistency convention without extra configuration:
+
+- The first animation's first frame supplies each variant's source pose on the combined directional seed board.
+- One seed-board candidate must be accepted before any dependent animation row is generated.
+- Every complete row receives its accepted directional seed plus the ordered existing production pose board.
+- Explicit frame IDs do not change order. The first animation's first cell is locked to the accepted seed even when its
+  frame ID is not `00`.
+
+Scoped generation automatically creates a missing object-wide seed board, then stops for review. Rows never reference
+adjacent generated frames or rows. New animated objects need pose references when no deployed source frames exist.
 
 ## Deploy Templates
 

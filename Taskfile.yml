@@ -7,6 +7,11 @@ env:
   GOWORK: off
 
 tasks:
+  tidy:
+    desc: Remove unused Go module requirements
+    cmds:
+      - go mod tidy
+
   fix:
     desc: Format Go source
     cmds:
@@ -28,7 +33,7 @@ tasks:
       - go test ./... -run 'TestE2E'
 
   e2e:live:
-    desc: Run opt-in live OpenAI smoke tests
+    desc: Run opt-in live provider smoke tests
     env:
       SPRITES_AI_GEN_LIVE: "1"
     cmds:

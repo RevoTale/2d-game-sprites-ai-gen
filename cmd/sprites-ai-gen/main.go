@@ -9,14 +9,16 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/conditioning"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/deploy"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/envfile"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/generate"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/gitguard"
-	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/imageio"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/output"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/provider"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/review"
+	statusreport "github.com/RevoTale/2d-game-sprites-ai-gen/internal/status"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
 )
 
@@ -31,6 +33,9 @@ func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return errors.New("command is required")
 	}
+	if err := rejectRemovedFlags(args[1:]); err != nil {
+		return err
+	}
 	switch args[0] {
 	case "init":
 		return runInit(args[1:])
@@ -39,11 +44,23 @@ func run(ctx context.Context, args []string) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		_, _, _, err := loadTargetsFromCommon(common)
+		p, _, all, err := loadTargetsFromCommon(common)
 		if err != nil {
 			return err
 		}
-		fmt.Println("sprite pack is valid")
+		if err := output.Validate(filepath.Join(common.packDir, pack.OutputDir(p))); err != nil {
+			return err
+		}
+		animatedObjects := make(map[string]struct{})
+		staticObjects := make(map[string]struct{})
+		for _, target := range all {
+			if target.AnimationID == "" {
+				staticObjects[target.ObjectID] = struct{}{}
+				continue
+			}
+			animatedObjects[target.ObjectID] = struct{}{}
+		}
+		fmt.Printf("sprite pack is valid: animated_objects=%d static_objects=%d targets=%d\n", len(animatedObjects), len(staticObjects), len(all))
 		return nil
 	case "generate":
 		return runGenerate(ctx, args[1:])
@@ -52,11 +69,11 @@ func run(ctx context.Context, args []string) error {
 	case "review":
 		return runReview(args[1:])
 	case "sheet":
-		return runSheet(args[1:])
+		return errors.New("command sheet was removed; review artifacts are generated automatically")
 	case "deploy-plan":
-		return runDeploy(args[1:], true)
+		return errors.New("command deploy-plan was removed; use deploy --dry-run")
 	case "deploy":
-		return runDeploy(args[1:], false)
+		return runDeploy(args[1:])
 	case "prune":
 		return runPrune(args[1:])
 	case "git-guard":
@@ -74,7 +91,7 @@ func runInit(args []string) error {
 	}
 	files := map[string]string{
 		"THEME.md":     "# Theme\n\nHigh-detail pixel art with clean readable silhouettes.\n",
-		".env.example": "SPRITES_AI_GEN_PROVIDER=openai\nOPENAI_API_KEY=\n",
+		".env.example": "# OpenAI is the supported real image provider.\nSPRITES_AI_GEN_PROVIDER=openai\nOPENAI_API_KEY=\n",
 		".gitignore":   ".env\n.env.*\n!.env.example\noutput/\n",
 		"sprites.json": starterSpritesJSON,
 	}
@@ -94,7 +111,7 @@ func runGenerate(ctx context.Context, args []string) error {
 	fs, common := commonFlags("generate")
 	providerName := fs.String("provider", "", "real provider: openai; auto-detects from provider env when omitted")
 	fake := fs.Bool("fake", false, "use deterministic fake provider for tests and plumbing checks")
-	force := fs.Bool("force", false, "regenerate accepted/deployed targets")
+	force := fs.Bool("force", false, "retry explicitly rejected targets")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -111,13 +128,69 @@ func runGenerate(ctx context.Context, args []string) error {
 		return err
 	}
 	all = resolveReferencePaths(all, common.packDir)
-	out := generate.OutputDir(p, common.outputOverride)
-	result, err := generate.Run(ctx, all, gen, generate.Options{OutputDir: filepath.Join(common.packDir, out), RunID: common.runID, Filter: common.filter(), Force: *force})
+	out := pack.OutputDir(p)
+	if err := output.Validate(filepath.Join(common.packDir, out)); err != nil {
+		return err
+	}
+	deployDir := p.DeployDir
+	if deployDir != "" && !filepath.IsAbs(deployDir) {
+		deployDir = filepath.Join(common.packDir, deployDir)
+	}
+	result, err := generate.Run(ctx, all, gen, generate.Options{
+		OutputDir: filepath.Join(common.packDir, out),
+		DeployDir: deployDir,
+		RunID:     common.runID,
+		Filter:    common.filter(),
+		Force:     *force,
+		Progress: func(event generate.ProgressEvent) {
+			fmt.Println(formatGenerationProgress(event))
+		},
+	})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("run: %s\ngenerated: %d\nskipped: %d\n", result.RunID, result.Generated, result.Skipped)
-	return nil
+	fmt.Printf("run_id: %s\ngenerated: %d\nskipped: %d\nawaiting_review: %d\n", result.RunID, result.Generated, result.Skipped, result.AwaitingReview)
+	manifest, err := generate.Load(filepath.Join(common.packDir, out), result.RunID)
+	if err != nil {
+		return err
+	}
+	return statusreport.Print(os.Stdout, manifest, all, common.filter())
+}
+
+func formatGenerationProgress(event generate.ProgressEvent) string {
+	switch event.Stage {
+	case generate.ProgressRunStarted:
+		return fmt.Sprintf("run: %s", event.RunID)
+	case generate.ProgressIntermediateGenerating:
+		return fmt.Sprintf("progress: intermediate %s generating", event.TargetID)
+	case generate.ProgressIntermediateReady:
+		return fmt.Sprintf("progress: intermediate %s ready", event.TargetID)
+	case generate.ProgressTargetGenerating:
+		return fmt.Sprintf("progress: target %d/%d %s generating", event.Current, event.Total, event.TargetID)
+	case generate.ProgressCandidateGenerating:
+		if event.Total == 0 {
+			return fmt.Sprintf("progress: intermediate %s candidate %d/%d generating", event.TargetID, event.Candidate, event.Candidates)
+		}
+		return fmt.Sprintf("progress: target %d/%d %s candidate %d/%d generating", event.Current, event.Total, event.TargetID, event.Candidate, event.Candidates)
+	case generate.ProgressProviderProgress:
+		if event.Total == 0 {
+			return fmt.Sprintf("progress: intermediate %s candidate %d/%d provider poll %d", event.TargetID, event.Candidate, event.Candidates, event.ProviderCurrent)
+		}
+		return fmt.Sprintf("progress: target %d/%d %s candidate %d/%d provider poll %d", event.Current, event.Total, event.TargetID, event.Candidate, event.Candidates, event.ProviderCurrent)
+	case generate.ProgressCandidateReady:
+		if event.Total == 0 {
+			return fmt.Sprintf("progress: intermediate %s candidate %d/%d ready", event.TargetID, event.Candidate, event.Candidates)
+		}
+		return fmt.Sprintf("progress: target %d/%d %s candidate %d/%d ready", event.Current, event.Total, event.TargetID, event.Candidate, event.Candidates)
+	case generate.ProgressTargetReady:
+		return fmt.Sprintf("progress: target %d/%d %s ready", event.Current, event.Total, event.TargetID)
+	case generate.ProgressTargetSkipped:
+		return fmt.Sprintf("progress: target %d/%d %s skipped", event.Current, event.Total, event.TargetID)
+	case generate.ProgressRunCompleted:
+		return "progress: run complete"
+	default:
+		return "progress: unknown stage"
+	}
 }
 
 func generateEnvironment(packDir string) (map[string]string, error) {
@@ -127,13 +200,13 @@ func generateEnvironment(packDir string) (map[string]string, error) {
 func resolveReferencePaths(all []targets.Target, packDir string) []targets.Target {
 	out := append([]targets.Target(nil), all...)
 	for i := range out {
-		refs := append([]pack.Reference(nil), out[i].References...)
-		for j := range refs {
-			if refs[j].Path != "" && !filepath.IsAbs(refs[j].Path) {
-				refs[j].Path = filepath.Join(packDir, refs[j].Path)
+		inputs := append([]conditioning.Input(nil), out[i].Inputs...)
+		for inputIndex := range inputs {
+			if inputs[inputIndex].Path != "" && !filepath.IsAbs(inputs[inputIndex].Path) {
+				inputs[inputIndex].Path = filepath.Join(packDir, inputs[inputIndex].Path)
 			}
 		}
-		out[i].References = refs
+		out[i].Inputs = inputs
 	}
 	return out
 }
@@ -143,81 +216,62 @@ func runStatus(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	p, _, _, err := loadTargetsFromCommon(common)
+	if err := requireConcreteRunID(common.runID); err != nil {
+		return err
+	}
+	p, _, all, err := loadTargetsFromCommon(common)
 	if err != nil {
 		return err
 	}
-	manifest, err := generate.Load(filepath.Join(common.packDir, generate.OutputDir(p, common.outputOverride)), common.runID)
+	manifest, err := generate.Load(filepath.Join(common.packDir, pack.OutputDir(p)), common.runID)
 	if err != nil {
 		return err
 	}
-	counts := map[string]int{}
-	for _, state := range manifest.Targets {
-		counts[state.Status]++
-	}
-	for _, status := range []string{generate.StatusPending, generate.StatusGenerated, generate.StatusAccepted, generate.StatusRejected, generate.StatusDeployed} {
-		fmt.Printf("%s: %d\n", status, counts[status])
-	}
-	return nil
+	return statusreport.Print(os.Stdout, manifest, all, common.filter())
 }
 
 func runReview(args []string) error {
 	fs, common := commonFlags("review")
 	status := fs.String("status", "", "accepted or rejected")
 	reason := fs.String("reason", "", "review reason")
-	allowPartial := fs.Bool("allow-partial", false, "allow pending matched targets")
+	stage := fs.String("stage", "", "review intermediate stage: seed")
+	candidate := fs.String("candidate", "", "select a directional seed candidate")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := requireConcreteRunID(common.runID); err != nil {
 		return err
 	}
 	p, _, all, err := loadTargetsFromCommon(common)
 	if err != nil {
 		return err
 	}
-	result, err := review.Apply(all, review.Options{OutputDir: filepath.Join(common.packDir, generate.OutputDir(p, common.outputOverride)), RunID: common.runID, Filter: common.filter(), Status: *status, Reason: *reason, AllowPartial: *allowPartial})
+	if *candidate != "" && *stage == "" {
+		*stage = "seed"
+	}
+	outputDir := filepath.Join(common.packDir, pack.OutputDir(p))
+	result, err := review.Apply(all, review.Options{OutputDir: outputDir, RunID: common.runID, Filter: common.filter(), Status: *status, Reason: *reason, Stage: *stage, Candidate: *candidate})
 	fmt.Printf("reviewed: %d\nskipped_pending: %d\n", result.Reviewed, result.SkippedPending)
-	return err
-}
-
-func runSheet(args []string) error {
-	fs, common := commonFlags("sheet")
-	if err := fs.Parse(args); err != nil {
-		return err
+	for _, warning := range result.Warnings {
+		fmt.Printf("warning: %s\n", warning)
 	}
-	p, _, all, err := loadTargetsFromCommon(common)
 	if err != nil {
 		return err
 	}
-	outputDir := filepath.Join(common.packDir, generate.OutputDir(p, common.outputOverride))
 	manifest, err := generate.Load(outputDir, common.runID)
 	if err != nil {
 		return err
 	}
-	selected := targets.FilterTargets(all, common.filter())
-	var paths []string
-	for _, target := range selected {
-		state := manifest.Targets[target.ID]
-		if state != nil && state.NormalizedPath != "" {
-			paths = append(paths, state.NormalizedPath)
-		}
-	}
-	name := "pack"
-	if common.object != "" {
-		name = common.object
-	}
-	out := filepath.Join(outputDir, "runs", common.runID, "contact-sheets", name+".png")
-	if err := imageio.AssembleHorizontalSheet(paths, out); err != nil {
-		return err
-	}
-	fmt.Println(out)
-	return nil
+	return statusreport.Print(os.Stdout, manifest, all, common.filter())
 }
 
-func runDeploy(args []string, planOnly bool) error {
+func runDeploy(args []string) error {
 	fs, common := commonFlags("deploy")
 	dryRun := fs.Bool("dry-run", false, "show deploy plan without copying")
-	complete := fs.Bool("complete", false, "require all selected targets accepted")
-	deployDirOverride := fs.String("deploy-dir", "", "deploy directory override")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := requireConcreteRunID(common.runID); err != nil {
 		return err
 	}
 	p, _, all, err := loadTargetsFromCommon(common)
@@ -225,24 +279,29 @@ func runDeploy(args []string, planOnly bool) error {
 		return err
 	}
 	deployDir := p.DeployDir
-	if *deployDirOverride != "" {
-		deployDir = *deployDirOverride
-	}
 	if deployDir == "" {
 		return errors.New("deployDir is required")
 	}
 	if !filepath.IsAbs(deployDir) {
 		deployDir = filepath.Join(common.packDir, deployDir)
 	}
-	opts := deploy.Options{OutputDir: filepath.Join(common.packDir, generate.OutputDir(p, common.outputOverride)), RunID: common.runID, DeployDir: deployDir, Filter: common.filter(), Complete: *complete}
-	if planOnly || *dryRun {
+	opts := deploy.Options{OutputDir: filepath.Join(common.packDir, pack.OutputDir(p)), RunID: common.runID, DeployDir: deployDir, Filter: common.filter()}
+	if *dryRun {
 		plan, err := deploy.BuildPlan(all, opts)
+		fmt.Printf("run_id: %s\nstate: dry_run\n", common.runID)
 		fmt.Print(deploy.FormatPlan(plan))
 		return err
 	}
 	plan, err := deploy.Execute(all, opts)
 	fmt.Print(deploy.FormatPlan(plan))
-	return err
+	if err != nil {
+		return err
+	}
+	manifest, err := generate.Load(opts.OutputDir, common.runID)
+	if err != nil {
+		return err
+	}
+	return statusreport.Print(os.Stdout, manifest, all, common.filter())
 }
 
 func runPrune(args []string) error {
@@ -251,21 +310,31 @@ func runPrune(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := requireConcreteRunID(common.runID); err != nil {
+		return err
+	}
 	p, _, all, err := loadTargetsFromCommon(common)
 	if err != nil {
 		return err
 	}
 	if !*onlyRaw {
-		return errors.New("only --only-raw pruning is supported in v1")
+		return errors.New("only --only-raw pruning is supported")
 	}
-	outputDir := filepath.Join(common.packDir, generate.OutputDir(p, common.outputOverride))
-	selected := targets.FilterTargets(all, common.filter())
-	for _, target := range selected {
-		if err := os.RemoveAll(filepath.Join(generate.TargetDir(outputDir, common.runID, target.ID), "attempts")); err != nil {
-			return err
-		}
+	outputDir := filepath.Join(common.packDir, pack.OutputDir(p))
+	selected, err := targets.Select(all, common.filter())
+	if err != nil {
+		return err
 	}
-	return nil
+	removed, err := generate.PruneRaw(outputDir, common.runID, selected)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("pruned raw images: %d\n", removed)
+	manifest, err := generate.Load(outputDir, common.runID)
+	if err != nil {
+		return err
+	}
+	return statusreport.Print(os.Stdout, manifest, all, common.filter())
 }
 
 func runGitGuard(args []string) error {
@@ -277,7 +346,7 @@ func runGitGuard(args []string) error {
 	if err != nil {
 		return err
 	}
-	outputDir := filepath.Join(common.packDir, generate.OutputDir(p, common.outputOverride))
+	outputDir := filepath.Join(common.packDir, pack.OutputDir(p))
 	offenders, err := gitguard.Check(outputDir)
 	if err != nil {
 		return err
@@ -293,13 +362,12 @@ func runGitGuard(args []string) error {
 }
 
 type commonOptions struct {
-	packDir        string
-	runID          string
-	outputOverride string
-	object         string
-	animation      string
-	frame          string
-	variants       multiFlag
+	packDir   string
+	runID     string
+	object    string
+	animation string
+	frame     string
+	variants  multiFlag
 }
 
 func commonFlags(name string) (*flag.FlagSet, *commonOptions) {
@@ -307,12 +375,37 @@ func commonFlags(name string) (*flag.FlagSet, *commonOptions) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.StringVar(&common.packDir, "pack", ".", "sprite pack directory")
 	fs.StringVar(&common.runID, "run", "auto", "run id")
-	fs.StringVar(&common.outputOverride, "output", "", "output directory override")
 	fs.StringVar(&common.object, "object", "", "object id filter")
 	fs.StringVar(&common.animation, "animation", "", "animation id filter")
 	fs.StringVar(&common.frame, "frame", "", "frame id filter")
 	fs.Var(&common.variants, "variant", "variant filter as axis=value")
 	return fs, common
+}
+
+func rejectRemovedFlags(args []string) error {
+	removed := map[string]string{
+		"--output":        "paths come from sprites.json",
+		"--deploy-dir":    "paths come from sprites.json",
+		"--allow-partial": "pending targets are ignored and animated rows are reviewed atomically",
+		"--complete":      "deployment always selects complete accepted groups",
+	}
+	for _, arg := range args {
+		name := arg
+		if index := strings.IndexByte(name, '='); index >= 0 {
+			name = name[:index]
+		}
+		if replacement, ok := removed[name]; ok {
+			return fmt.Errorf("flag %s was removed; %s", name, replacement)
+		}
+	}
+	return nil
+}
+
+func requireConcreteRunID(runID string) error {
+	if runID == "" || runID == "auto" {
+		return errors.New("--run requires an existing run id")
+	}
+	return nil
 }
 
 func (c *commonOptions) filter() targets.Filter {
@@ -330,10 +423,17 @@ type multiFlag []string
 
 func (m *multiFlag) String() string { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(value string) error {
-	if !strings.Contains(value, "=") {
+	parts := strings.SplitN(value, "=", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
 		return fmt.Errorf("variant %q must use axis=value", value)
 	}
-	*m = append(*m, value)
+	axis, normalized := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[0])+"="+strings.TrimSpace(parts[1])
+	for _, existing := range *m {
+		if strings.HasPrefix(existing, axis+"=") {
+			return fmt.Errorf("variant axis %q was specified more than once", axis)
+		}
+	}
+	*m = append(*m, normalized)
 	return nil
 }
 
