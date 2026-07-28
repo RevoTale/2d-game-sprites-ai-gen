@@ -17,8 +17,6 @@ type Options struct {
 	Filter    targets.Filter
 	Status    string
 	Reason    string
-	Stage     string
-	Candidate string
 }
 
 type Result struct {
@@ -34,39 +32,6 @@ func Apply(all []targets.Target, opts Options) (Result, error) {
 	if opts.Status == generate.StatusRejected && opts.Reason == "" {
 		return Result{}, errors.New("reject review requires --reason")
 	}
-	if opts.Stage != "" {
-		if opts.Stage != "seed" {
-			return Result{}, fmt.Errorf("unsupported review stage %q", opts.Stage)
-		}
-		if opts.Filter.Object == "" {
-			return Result{}, errors.New("seed review requires --object")
-		}
-		if opts.Status == generate.StatusAccepted && opts.Candidate == "" {
-			return Result{}, errors.New("seed acceptance requires --candidate")
-		}
-		if opts.Filter.Animation != "" || opts.Filter.Frame != "" || len(opts.Filter.Variants) != 0 {
-			return Result{}, errors.New("seed review must use object-wide scope")
-		}
-		if opts.Status == generate.StatusAccepted && opts.Reason == "" {
-			opts.Reason = "Directional seed board accepted by visual review."
-		}
-		if err := generate.SelectSeedCandidate(all, opts.OutputDir, opts.RunID, opts.Filter.Object, opts.Candidate, opts.Status, opts.Reason); err != nil {
-			return Result{}, err
-		}
-		manifest, err := generate.Load(opts.OutputDir, opts.RunID)
-		if err != nil {
-			return Result{}, err
-		}
-		seed := manifest.Intermediates["direction-seed-board:"+opts.Filter.Object]
-		result := Result{Reviewed: 1}
-		if seed != nil && opts.Status == generate.StatusAccepted {
-			result.Warnings = append([]string(nil), seed.Warnings...)
-		}
-		return result, nil
-	}
-	if opts.Candidate != "" {
-		return Result{}, errors.New("--candidate is valid only for directional-seed review with --stage seed")
-	}
 	manifest, err := generate.Load(opts.OutputDir, opts.RunID)
 	if err != nil {
 		return Result{}, err
@@ -79,11 +44,49 @@ func Apply(all []targets.Target, opts Options) (Result, error) {
 		opts.Reason = "Accepted by manual visual review."
 	}
 	var result Result
-	for _, group := range targets.AtomicGroups(selected) {
+	animatedObjects := map[string]bool{}
+	var staticTargets []targets.Target
+	for _, target := range selected {
+		if target.AnimationID == "" {
+			staticTargets = append(staticTargets, target)
+		} else {
+			animatedObjects[target.ObjectID] = true
+		}
+	}
+	if len(animatedObjects) != 0 && (opts.Filter.Animation != "" || opts.Filter.Frame != "" || len(opts.Filter.Variants) != 0) {
+		return Result{}, errors.New("animated review is unit-atomic; select only --object")
+	}
+	for objectID := range animatedObjects {
+		unit := manifest.Units["unit:"+objectID]
+		if unit == nil || unit.Status != generate.StatusAwaitingReview {
+			if unit != nil {
+				result.SkippedPending += len(unit.TargetIDs)
+			}
+			continue
+		}
+		reviewedAt := time.Now().UTC().Format(time.RFC3339)
+		unit.Status = opts.Status
+		unit.Review = &generate.ReviewRecord{Status: opts.Status, Reason: opts.Reason, ReviewedAt: reviewedAt}
+		for _, targetID := range unit.TargetIDs {
+			state := manifest.Targets[targetID]
+			if state == nil || state.NormalizedPath == "" {
+				return result, fmt.Errorf("unit %q target %q is missing normalized output", objectID, targetID)
+			}
+			state.Status = opts.Status
+			state.Review = &generate.ReviewRecord{Status: opts.Status, Reason: opts.Reason, ReviewedAt: reviewedAt}
+			result.Reviewed++
+		}
+		unitDir := filepath.Join(opts.OutputDir, "runs", opts.RunID, "units", objectID)
+		if err := generate.WriteQA(unitDir, opts.Status, opts.Reason); err != nil {
+			return result, err
+		}
+		unit.Artifacts.QAPath = filepath.Join(unitDir, "qa.md")
+	}
+	for _, group := range targets.AtomicGroups(staticTargets) {
 		ready := true
 		for _, target := range group {
 			state := manifest.Targets[target.ID]
-			if state == nil || state.Status == generate.StatusPending || state.NormalizedPath == "" {
+			if state == nil || state.Status != generate.StatusAwaitingReview || state.NormalizedPath == "" {
 				ready = false
 				break
 			}
@@ -107,27 +110,8 @@ func Apply(all []targets.Target, opts Options) (Result, error) {
 			}
 			result.Reviewed++
 		}
-		if group[0].AnimationID != "" {
-			rowID := manifest.Targets[group[0].ID].AnimationRowID
-			row := manifest.Intermediates[rowID]
-			if row == nil {
-				return result, fmt.Errorf("animation row %q is missing from run manifest", rowID)
-			}
-			row.Status = opts.Status
-			row.Review = &generate.ReviewRecord{Status: opts.Status, Reason: opts.Reason, ReviewedAt: reviewedAt}
-			if row.NormalizedPath == "" {
-				return result, fmt.Errorf("animation row %q has no normalized review artifact", rowID)
-			}
-			rowDir := filepath.Dir(row.NormalizedPath)
-			if err := generate.WriteQA(rowDir, opts.Status, opts.Reason); err != nil {
-				return result, err
-			}
-			row.Artifacts.QAPath = filepath.Join(rowDir, "qa.md")
-			if row.Artifacts.PromptPath == "" {
-				row.Artifacts.PromptPath = filepath.Join(rowDir, "prompt.md")
-			}
-		}
 	}
+	generate.RefreshUnitStatuses(manifest)
 	if err := generate.Save(opts.OutputDir, opts.RunID, manifest); err != nil {
 		return result, err
 	}

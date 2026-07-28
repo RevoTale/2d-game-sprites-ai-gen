@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ const (
 	DefaultOutputDir              = "output"
 	DefaultStaticDeployTemplate   = "sprites/{target}.png"
 	DefaultAnimatedDeployTemplate = "units/{object}__{animation}__{variant.direction}__{frame}.png"
+	RenderModeIsolated            = "isolated"
+	RenderModeOpaqueTile          = "opaque-tile"
 )
 
 var (
@@ -32,19 +35,23 @@ type Pack struct {
 }
 
 type Reference struct {
+	ID          string `json:"id"`
+	Role        string `json:"role"`
 	Path        string `json:"path"`
 	Description string `json:"description"`
 	Required    bool   `json:"required,omitempty"`
 }
 
 type Object struct {
-	ID          string      `json:"id"`
-	Description string      `json:"description"`
-	Size        Size        `json:"size"`
-	References  []Reference `json:"references,omitempty"`
-	Variants    []Variant   `json:"variants,omitempty"`
-	Animations  []Animation `json:"animations,omitempty"`
-	Deploy      Deploy      `json:"deploy,omitempty"`
+	ID            string      `json:"id"`
+	Description   string      `json:"description"`
+	IdentityLocks []string    `json:"identityLocks,omitempty"`
+	RenderMode    string      `json:"renderMode,omitempty"`
+	Size          Size        `json:"size"`
+	References    []Reference `json:"references,omitempty"`
+	Variants      []Variant   `json:"variants,omitempty"`
+	Animations    []Animation `json:"animations,omitempty"`
+	Deploy        Deploy      `json:"deploy,omitempty"`
 }
 
 type Size struct {
@@ -60,9 +67,15 @@ type Variant struct {
 }
 
 type VariantValue struct {
-	ID          string      `json:"id"`
-	Description string      `json:"description"`
-	References  []Reference `json:"references,omitempty"`
+	ID          string              `json:"id"`
+	Description string              `json:"description"`
+	Reference   *DirectionReference `json:"reference,omitempty"`
+	References  []Reference         `json:"references,omitempty"`
+}
+
+type DirectionReference struct {
+	Path        string `json:"path"`
+	Description string `json:"description"`
 }
 
 type Animation struct {
@@ -116,13 +129,17 @@ func Decode(r io.Reader) (*Pack, error) {
 }
 
 func Validate(dir string, p *Pack) error {
-	if p.Version != 1 {
-		return fmt.Errorf("version must be 1, got %d", p.Version)
+	if p.Version == 1 || p.Version == 2 {
+		return fmt.Errorf("sprites.json v%d is unsupported; migrate the pack to v3", p.Version)
+	}
+	if p.Version != 3 {
+		return fmt.Errorf("sprites.json v%d is unsupported; expected v3", p.Version)
 	}
 	if len(p.Objects) == 0 {
 		return errors.New("objects must contain at least one object")
 	}
-	if err := validateReferences(dir, "pack", p.References); err != nil {
+	referenceIDs := map[string]string{}
+	if err := validateReferences(dir, "pack", "style", p.References, referenceIDs); err != nil {
 		return err
 	}
 	objects := map[string]struct{}{}
@@ -140,20 +157,120 @@ func Validate(dir string, p *Pack) error {
 		if obj.Size.Width <= 0 || obj.Size.Height <= 0 {
 			return fmt.Errorf("object %q size must be positive", obj.ID)
 		}
-		if err := validateReferences(dir, "object "+obj.ID, obj.References); err != nil {
+		if err := validateRenderMode(obj); err != nil {
+			return err
+		}
+		if len(obj.Animations) != 0 {
+			if len(obj.IdentityLocks) == 0 {
+				return fmt.Errorf("animated object %q identityLocks must contain at least one visual lock", obj.ID)
+			}
+			for index, lock := range obj.IdentityLocks {
+				if strings.TrimSpace(lock) == "" {
+					return fmt.Errorf("animated object %q identityLocks[%d] must not be empty", obj.ID, index)
+				}
+			}
+			if err := validateAnimatedDirectionReferences(dir, p.DeployDir, obj, referenceIDs); err != nil {
+				return err
+			}
+		}
+		if err := validateReferences(dir, "object "+obj.ID, "identity", obj.References, referenceIDs); err != nil {
 			return err
 		}
 		if err := validateDeployTemplate(obj); err != nil {
 			return fmt.Errorf("object %q deploy template: %w", obj.ID, err)
 		}
-		if err := validateVariants(dir, obj); err != nil {
+		if err := validateVariants(dir, obj, referenceIDs); err != nil {
 			return err
 		}
-		if err := validateAnimations(dir, obj); err != nil {
+		if err := validateAnimations(dir, obj, referenceIDs); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func validateAnimatedDirectionReferences(dir, deployDir string, obj Object, referenceIDs map[string]string) error {
+	if len(obj.Variants) != 1 || obj.Variants[0].ID != "direction" {
+		return fmt.Errorf("animated object %q must define exactly one variant axis named %q", obj.ID, "direction")
+	}
+	referencePaths := map[string]string{}
+	for _, value := range obj.Variants[0].Values {
+		referenceID := DirectionReferenceID(obj.ID, value.ID)
+		owner := "object " + obj.ID + " direction " + value.ID
+		if previous, exists := referenceIDs[referenceID]; exists {
+			return fmt.Errorf("duplicate reference id %q in %s and %s", referenceID, previous, owner)
+		}
+		referenceIDs[referenceID] = owner
+		if value.Reference == nil {
+			return fmt.Errorf("animated object %q direction %q reference is required", obj.ID, value.ID)
+		}
+		ref := value.Reference
+		if strings.TrimSpace(ref.Path) == "" {
+			return fmt.Errorf("animated object %q direction %q reference path is required", obj.ID, value.ID)
+		}
+		if strings.TrimSpace(ref.Description) == "" {
+			return fmt.Errorf("animated object %q direction %q reference description is required", obj.ID, value.ID)
+		}
+		if err := validateDirectionReferencePath(dir, deployDir, ref.Path); err != nil {
+			return fmt.Errorf("animated object %q direction %q reference %q: %w", obj.ID, value.ID, ref.Path, err)
+		}
+		cleanPath := filepath.Clean(ref.Path)
+		if direction, exists := referencePaths[cleanPath]; exists {
+			return fmt.Errorf("animated object %q directions %q and %q use duplicate reference %q", obj.ID, direction, value.ID, ref.Path)
+		}
+		referencePaths[cleanPath] = value.ID
+		path := filepath.Join(dir, ref.Path)
+		size, err := pngDimensions(path)
+		if err != nil {
+			return fmt.Errorf("animated object %q direction %q reference %q: %w", obj.ID, value.ID, ref.Path, err)
+		}
+		if size != obj.Size {
+			return fmt.Errorf("animated object %q direction %q reference %q is %dx%d, expected %dx%d", obj.ID, value.ID, ref.Path, size.Width, size.Height, obj.Size.Width, obj.Size.Height)
+		}
+	}
+	return nil
+}
+
+// DirectionReferenceID returns the stable evidence identity derived by V3
+// packs instead of repeated in configuration.
+func DirectionReferenceID(objectID, directionID string) string {
+	return "direction-reference-" + objectID + "-" + directionID
+}
+
+func pngDimensions(path string) (Size, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return Size{}, err
+	}
+	defer file.Close()
+	config, err := png.DecodeConfig(file)
+	if err != nil {
+		return Size{}, fmt.Errorf("decode PNG: %w", err)
+	}
+	return Size{Width: config.Width, Height: config.Height}, nil
+}
+
+func validateRenderMode(obj Object) error {
+	switch obj.RenderMode {
+	case "", RenderModeIsolated:
+		return nil
+	case RenderModeOpaqueTile:
+		if len(obj.Animations) != 0 {
+			return fmt.Errorf("animated object %q renderMode %q is unsupported", obj.ID, obj.RenderMode)
+		}
+		return nil
+	default:
+		return fmt.Errorf("object %q renderMode %q is unsupported; expected %q or %q", obj.ID, obj.RenderMode, RenderModeIsolated, RenderModeOpaqueTile)
+	}
+}
+
+// EffectiveRenderMode returns the protocol mode used when renderMode is
+// omitted. Existing static objects remain isolated transparent subjects.
+func EffectiveRenderMode(obj Object) string {
+	if obj.RenderMode == "" {
+		return RenderModeIsolated
+	}
+	return obj.RenderMode
 }
 
 func validateDeployTemplate(obj Object) error {
@@ -188,7 +305,7 @@ func validateDeployTemplate(obj Object) error {
 	return nil
 }
 
-func validateVariants(dir string, obj Object) error {
+func validateVariants(dir string, obj Object, referenceIDs map[string]string) error {
 	seen := map[string]struct{}{}
 	for _, variant := range obj.Variants {
 		if err := validateID("variant", variant.ID); err != nil {
@@ -204,7 +321,7 @@ func validateVariants(dir string, obj Object) error {
 		if len(variant.Values) == 0 {
 			return fmt.Errorf("object %q variant %q must contain values", obj.ID, variant.ID)
 		}
-		if err := validateReferences(dir, "variant "+variant.ID, variant.References); err != nil {
+		if err := validateReferences(dir, "variant "+variant.ID, "motion", variant.References, referenceIDs); err != nil {
 			return err
 		}
 		values := map[string]struct{}{}
@@ -219,7 +336,7 @@ func validateVariants(dir string, obj Object) error {
 			if strings.TrimSpace(value.Description) == "" {
 				return fmt.Errorf("object %q variant %q value %q description is required", obj.ID, variant.ID, value.ID)
 			}
-			if err := validateReferences(dir, "variant value "+value.ID, value.References); err != nil {
+			if err := validateReferences(dir, "variant value "+value.ID, "motion", value.References, referenceIDs); err != nil {
 				return err
 			}
 		}
@@ -227,7 +344,7 @@ func validateVariants(dir string, obj Object) error {
 	return nil
 }
 
-func validateAnimations(dir string, obj Object) error {
+func validateAnimations(dir string, obj Object, referenceIDs map[string]string) error {
 	seen := map[string]struct{}{}
 	for _, animation := range obj.Animations {
 		if err := validateID("animation", animation.ID); err != nil {
@@ -243,7 +360,7 @@ func validateAnimations(dir string, obj Object) error {
 		if len(animation.Frames) == 0 {
 			return fmt.Errorf("object %q animation %q must contain frames", obj.ID, animation.ID)
 		}
-		if err := validateReferences(dir, "animation "+animation.ID, animation.References); err != nil {
+		if err := validateReferences(dir, "animation "+animation.ID, "motion", animation.References, referenceIDs); err != nil {
 			return err
 		}
 		frameIDs := map[string]struct{}{}
@@ -259,7 +376,7 @@ func validateAnimations(dir string, obj Object) error {
 			if strings.TrimSpace(frame.Description) == "" {
 				return fmt.Errorf("object %q animation %q frame %q description is required", obj.ID, animation.ID, id)
 			}
-			if err := validateReferences(dir, "frame "+id, frame.References); err != nil {
+			if err := validateReferences(dir, "frame "+id, "motion", frame.References, referenceIDs); err != nil {
 				return err
 			}
 		}
@@ -298,8 +415,18 @@ func validateID(kind, id string) error {
 	return nil
 }
 
-func validateReferences(dir, owner string, refs []Reference) error {
+func validateReferences(dir, owner, expectedRole string, refs []Reference, referenceIDs map[string]string) error {
 	for _, ref := range refs {
+		if err := validateID(owner+" reference", ref.ID); err != nil {
+			return err
+		}
+		if previous, exists := referenceIDs[ref.ID]; exists {
+			return fmt.Errorf("duplicate reference id %q in %s and %s", ref.ID, previous, owner)
+		}
+		referenceIDs[ref.ID] = owner
+		if ref.Role != expectedRole {
+			return fmt.Errorf("%s reference %q role must be %q, got %q", owner, ref.ID, expectedRole, ref.Role)
+		}
 		if strings.TrimSpace(ref.Path) == "" {
 			return fmt.Errorf("%s reference path is required", owner)
 		}
@@ -325,4 +452,41 @@ func validateRelativePath(path string) error {
 		return errors.New("path traversal is not allowed")
 	}
 	return nil
+}
+
+func validateDirectionReferencePath(packDir, deployDir, path string) error {
+	if filepath.IsAbs(path) {
+		return errors.New("absolute paths are not allowed")
+	}
+	resolved, err := filepath.Abs(filepath.Join(packDir, path))
+	if err != nil {
+		return fmt.Errorf("resolve path: %w", err)
+	}
+	packRoot, err := filepath.Abs(packDir)
+	if err != nil {
+		return fmt.Errorf("resolve pack directory: %w", err)
+	}
+	if pathWithin(packRoot, resolved) {
+		return nil
+	}
+	if deployDir == "" {
+		return errors.New("path traversal outside the pack or deploy directory is not allowed")
+	}
+	deployRoot := deployDir
+	if !filepath.IsAbs(deployRoot) {
+		deployRoot = filepath.Join(packDir, deployRoot)
+	}
+	deployRoot, err = filepath.Abs(deployRoot)
+	if err != nil {
+		return fmt.Errorf("resolve deploy directory: %w", err)
+	}
+	if pathWithin(deployRoot, resolved) {
+		return nil
+	}
+	return errors.New("path traversal outside the pack or deploy directory is not allowed")
+}
+
+func pathWithin(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }

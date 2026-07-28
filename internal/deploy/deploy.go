@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"os"
 	"path/filepath"
@@ -32,7 +33,7 @@ type Plan struct {
 type Item struct {
 	TargetID string
 	Path     string
-	Row      string
+	GroupID  string
 	Reason   string
 	Blocking bool
 }
@@ -55,7 +56,7 @@ func BuildPlan(all []targets.Target, opts Options) (Plan, error) {
 			appendStaticItem(&plan, group[0], manifest, opts.DeployDir)
 			continue
 		}
-		appendValidatedRow(&plan, key, group, manifest, opts.DeployDir)
+		appendValidatedUnit(&plan, key, group, manifest, opts.DeployDir)
 	}
 	if blocked := blockingCount(plan.Unchanged); blocked != 0 {
 		return plan, fmt.Errorf("deployment blocked by %d stale or invalid targets", blocked)
@@ -68,17 +69,17 @@ func BuildPlan(all []targets.Target, opts Options) (Plan, error) {
 
 func deploymentScope(all, selected []targets.Target) []targets.Target {
 	wanted := map[string]bool{}
-	rows := map[string]bool{}
+	objects := map[string]bool{}
 	for _, target := range selected {
 		if target.AnimationID == "" {
 			wanted[target.ID] = true
 		} else {
-			rows[rowKey(target)] = true
+			objects[target.ObjectID] = true
 		}
 	}
 	var scope []targets.Target
 	for _, target := range all {
-		if wanted[target.ID] || (target.AnimationID != "" && rows[rowKey(target)]) {
+		if wanted[target.ID] || (target.AnimationID != "" && objects[target.ObjectID]) {
 			scope = append(scope, target)
 		}
 	}
@@ -90,7 +91,7 @@ func groupTargets(scope []targets.Target) map[string][]targets.Target {
 	for _, target := range scope {
 		key := "static:" + target.ID
 		if target.AnimationID != "" {
-			key = rowKey(target)
+			key = "unit:" + target.ObjectID
 		}
 		groups[key] = append(groups[key], target)
 	}
@@ -115,64 +116,73 @@ func appendStaticItem(plan *Plan, target targets.Target, manifest *generate.Mani
 	plan.Unchanged = append(plan.Unchanged, Item{TargetID: target.ID, Path: path, Reason: stateReason(state)})
 }
 
-func appendValidatedRow(plan *Plan, row string, group []targets.Target, manifest *generate.Manifest, deployDir string) {
-	seedLineage, rowLineage := "", ""
+func appendValidatedUnit(plan *Plan, unitID string, group []targets.Target, manifest *generate.Manifest, deployDir string) {
 	var blockers []string
-	hardBlocker := false
+	unit := manifest.Units[unitID]
+	if unit != nil && unit.Status == generate.StatusDeployed {
+		for _, target := range group {
+			path, _ := RenderPath(deployDir, target)
+			plan.Unchanged = append(plan.Unchanged, Item{TargetID: target.ID, Path: path, GroupID: unitID, Reason: "already deployed"})
+		}
+		return
+	}
+	if unit == nil || unit.Status != generate.StatusAccepted || unit.Review == nil || unit.Review.Status != generate.StatusAccepted {
+		blockers = append(blockers, "complete unit is not accepted")
+	}
 	for _, target := range group {
 		state := manifest.Targets[target.ID]
 		if !deployable(state, false) {
 			blockers = append(blockers, target.ID+": "+stateReason(state))
 			continue
 		}
-		if seedLineage == "" {
-			seedLineage = state.SeedLineage
-			rowLineage = state.RowLineage
+		if _, err := os.Stat(state.NormalizedPath); err != nil {
+			blockers = append(blockers, target.ID+": normalized source is missing")
+		} else if dimensions, dimensionErr := imageio.PNGDimensions(state.NormalizedPath); dimensionErr != nil {
+			blockers = append(blockers, target.ID+": normalized source is not a decodable PNG: "+dimensionErr.Error())
+		} else if expected := image.Pt(target.Size.Width, target.Size.Height); dimensions != expected {
+			blockers = append(
+				blockers,
+				fmt.Sprintf("%s: normalized source dimensions = %v, want %v from the current pack", target.ID, dimensions, expected),
+			)
 		}
-		if state.SeedLineage == "" || state.SeedLineage != seedLineage {
-			blockers = append(blockers, target.ID+": directional seed lineage mismatch")
-			hardBlocker = true
+		if unit == nil {
+			continue
 		}
-		if state.RowLineage == "" || state.RowLineage != rowLineage {
-			blockers = append(blockers, target.ID+": animation row lineage mismatch")
-			hardBlocker = true
+		if state.UnitID != unit.ID {
+			blockers = append(blockers, target.ID+": unit lineage mismatch")
 		}
-		seed := manifest.Intermediates[state.SeedBoardID]
-		rowState := manifest.Intermediates[state.AnimationRowID]
-		if seed == nil || seed.Status != generate.StatusAccepted || seed.Lineage != state.SeedLineage {
-			blockers = append(blockers, target.ID+": directional seed is no longer the accepted lineage")
-			hardBlocker = true
+		master := manifest.Intermediates[state.CharacterMasterID]
+		if master == nil || master.Status != generate.StatusReady || master.Lineage == "" || master.Lineage != unit.MasterLineage || state.MasterLineage != master.Lineage {
+			blockers = append(blockers, target.ID+": character master lineage mismatch")
 		}
-		if rowState == nil || rowState.Status != generate.StatusAccepted || rowState.Lineage != state.RowLineage {
-			blockers = append(blockers, target.ID+": animation row is no longer the selected lineage")
-			hardBlocker = true
+		board := manifest.Intermediates[state.AnimationBoardID]
+		if board == nil || board.Status != generate.StatusReady || board.Lineage == "" || state.AnimationLineage != board.Lineage || unit.AnimationLineages[target.AnimationID] != board.Lineage {
+			blockers = append(blockers, target.ID+": animation board lineage mismatch")
 		}
 		path, err := RenderPath(deployDir, target)
 		if err != nil {
 			blockers = append(blockers, target.ID+": "+err.Error())
-			hardBlocker = true
 			continue
 		}
 		if err := productionUnchanged(state, path); err != nil {
 			blockers = append(blockers, target.ID+": "+err.Error())
-			hardBlocker = true
 		}
 	}
 	if len(blockers) != 0 {
-		reason := "row blocked: " + strings.Join(blockers, "; ")
+		reason := "unit blocked: " + strings.Join(blockers, "; ")
 		for _, target := range group {
 			path, _ := RenderPath(deployDir, target)
-			plan.Unchanged = append(plan.Unchanged, Item{TargetID: target.ID, Path: path, Row: row, Reason: reason, Blocking: hardBlocker})
+			plan.Unchanged = append(plan.Unchanged, Item{TargetID: target.ID, Path: path, GroupID: unitID, Reason: reason, Blocking: true})
 		}
 		return
 	}
 	for _, target := range group {
 		path, err := RenderPath(deployDir, target)
 		if err != nil {
-			plan.Unchanged = append(plan.Unchanged, Item{TargetID: target.ID, Row: row, Reason: err.Error()})
+			plan.Unchanged = append(plan.Unchanged, Item{TargetID: target.ID, GroupID: unitID, Reason: err.Error()})
 			continue
 		}
-		plan.Replace = append(plan.Replace, Item{TargetID: target.ID, Path: path, Row: row})
+		plan.Replace = append(plan.Replace, Item{TargetID: target.ID, Path: path, GroupID: unitID})
 	}
 }
 
@@ -287,8 +297,10 @@ func Execute(all []targets.Target, opts Options) (Plan, error) {
 		state := manifest.Targets[item.TargetID]
 		state.Status = generate.StatusDeployed
 		state.DeployPath = item.Path
-		state.Deploy = &generate.DeployRecord{Path: item.Path, Row: item.Row, DeployedAt: deployedAt, Skipped: skippedIDs(plan.Unchanged)}
+		state.Deploy = &generate.DeployRecord{Path: item.Path, GroupID: item.GroupID, DeployedAt: deployedAt, Skipped: skippedIDs(plan.Unchanged)}
 	}
+	markDeployedUnits(manifest, plan.Replace, deployedAt)
+	generate.RefreshUnitStatuses(manifest)
 	if err := generate.Save(opts.OutputDir, opts.RunID, manifest); err != nil {
 		if rollbackErr := rollbackReplacements(staged); rollbackErr != nil {
 			return plan, fmt.Errorf("save deployment manifest: %w; rollback failed: %v", err, rollbackErr)
@@ -296,6 +308,33 @@ func Execute(all []targets.Target, opts Options) (Plan, error) {
 		return plan, fmt.Errorf("save deployment manifest: %w", err)
 	}
 	return plan, nil
+}
+
+func markDeployedUnits(manifest *generate.Manifest, replaced []Item, deployedAt string) {
+	units := map[string]bool{}
+	for _, item := range replaced {
+		if state := manifest.Targets[item.TargetID]; state != nil && state.UnitID != "" {
+			units[state.UnitID] = true
+		}
+	}
+	for unitID := range units {
+		unit := manifest.Units[unitID]
+		if unit == nil {
+			continue
+		}
+		deployed := len(unit.TargetIDs) != 0
+		for _, targetID := range unit.TargetIDs {
+			state := manifest.Targets[targetID]
+			if state == nil || state.Status != generate.StatusDeployed {
+				deployed = false
+				break
+			}
+		}
+		if deployed {
+			unit.Status = generate.StatusDeployed
+			unit.Deploy = &generate.DeployRecord{Path: unitID, DeployedAt: deployedAt}
+		}
+	}
 }
 
 type stagedFile struct {

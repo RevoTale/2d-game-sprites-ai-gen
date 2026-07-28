@@ -51,7 +51,6 @@ func TestExpandInfersConditioningRolesWithoutChangingPackSchema(t *testing.T) {
 		conditioning.RolePose,
 		conditioning.RolePose,
 		conditioning.RolePose,
-		conditioning.RolePose,
 	}, inputRoles(target.Inputs))
 }
 
@@ -131,12 +130,18 @@ func TestExpandPreservesFrameArrayOrderWhenExplicitFrameIDsSortDifferently(t *te
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 1,
+  "version": 3,
   "objects": [
     {
       "id": "duelist",
       "description": "A duelist.",
+      "identityLocks": ["The same duelist appears in every frame."],
       "size": { "width": 16, "height": 16 },
+      "variants": [{
+        "id": "direction",
+        "description": "Direction.",
+        "values": [{"id":"right","description":"Right.","reference":{"path":"right.png","description":"Right reference."}}]
+      }],
       "animations": [
         {
           "id": "attack",
@@ -151,6 +156,7 @@ func TestExpandPreservesFrameArrayOrderWhenExplicitFrameIDsSortDifferently(t *te
     }
   ]
 }`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "right.png"), testkit.PNG(t, 16, 16), 0o644))
 	_, all := testkit.LoadTargets(t, dir)
 
 	selected := targets.FilterTargets(all, targets.Filter{Object: "duelist", Animation: "attack"})

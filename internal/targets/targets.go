@@ -15,6 +15,8 @@ type Target struct {
 	ID             string
 	ObjectID       string
 	ObjectDesc     string
+	IdentityLocks  []string
+	RenderMode     string
 	AnimationID    string
 	AnimationDesc  string
 	AnimationIndex int
@@ -29,9 +31,11 @@ type Target struct {
 }
 
 type VariantSelection struct {
-	AxisID      string
-	ValueID     string
-	Description string
+	AxisID               string
+	ValueID              string
+	Description          string
+	ReferencePath        string
+	ReferenceDescription string
 }
 
 type Filter struct {
@@ -171,7 +175,13 @@ func makeTarget(p *pack.Pack, obj pack.Object, variants []variantComboValue, ani
 	for _, variant := range variants {
 		inputs = append(inputs, roleInputs(conditioning.RolePose, variant.AxisRefs)...)
 		inputs = append(inputs, roleInputs(conditioning.RolePose, variant.ValueRefs)...)
-		selections = append(selections, VariantSelection{AxisID: variant.AxisID, ValueID: variant.ValueID, Description: variant.Description})
+		selections = append(selections, VariantSelection{
+			AxisID:               variant.AxisID,
+			ValueID:              variant.ValueID,
+			Description:          variant.Description,
+			ReferencePath:        variant.ReferencePath,
+			ReferenceDescription: variant.ReferenceDescription,
+		})
 		parts = append(parts, variant.AxisID+"-"+variant.ValueID)
 	}
 	frameID := ""
@@ -184,6 +194,8 @@ func makeTarget(p *pack.Pack, obj pack.Object, variants []variantComboValue, ani
 		ID:             strings.Join(parts, "__"),
 		ObjectID:       obj.ID,
 		ObjectDesc:     obj.Description,
+		IdentityLocks:  append([]string(nil), obj.IdentityLocks...),
+		RenderMode:     pack.EffectiveRenderMode(obj),
 		AnimationID:    animation.ID,
 		AnimationDesc:  animation.Description,
 		AnimationIndex: animationIndex,
@@ -202,7 +214,7 @@ func makeTarget(p *pack.Pack, obj pack.Object, variants []variantComboValue, ani
 func roleInputs(role conditioning.Role, refs []pack.Reference) []conditioning.Input {
 	out := make([]conditioning.Input, 0, len(refs))
 	for _, ref := range refs {
-		out = append(out, conditioning.Input{Role: role, Path: ref.Path, Description: ref.Description, Required: ref.Required})
+		out = append(out, conditioning.Input{ID: ref.ID, Role: role, Authority: role.String(), SourcePath: ref.Path, Path: ref.Path, Description: ref.Description, Required: ref.Required})
 	}
 	return out
 }
@@ -219,7 +231,11 @@ func BuildPrompt(theme string, target Target) string {
 	if target.FrameID != "" {
 		fmt.Fprintf(&b, "# Frame: %s\n%s\n\n", target.FrameID, target.FrameDesc)
 	}
-	fmt.Fprintf(&b, "Generate one independent sprite image for a final %dx%d target. Do not compose or crop from a sprite sheet.\n", target.Size.Width, target.Size.Height)
+	if target.RenderMode == pack.RenderModeOpaqueTile {
+		fmt.Fprintf(&b, "Generate one independent full-frame texture for a final %dx%d target. Do not compose or crop from a sprite sheet.\n", target.Size.Width, target.Size.Height)
+	} else {
+		fmt.Fprintf(&b, "Generate one independent sprite image for a final %dx%d target. Do not compose or crop from a sprite sheet.\n", target.Size.Width, target.Size.Height)
+	}
 	return b.String()
 }
 
@@ -246,11 +262,13 @@ func DeployPath(deployDir string, target Target) (string, error) {
 }
 
 type variantComboValue struct {
-	AxisID      string
-	ValueID     string
-	Description string
-	AxisRefs    []pack.Reference
-	ValueRefs   []pack.Reference
+	AxisID               string
+	ValueID              string
+	Description          string
+	ReferencePath        string
+	ReferenceDescription string
+	AxisRefs             []pack.Reference
+	ValueRefs            []pack.Reference
 }
 
 func variantCombos(variants []pack.Variant) [][]variantComboValue {
@@ -263,6 +281,10 @@ func variantCombos(variants []pack.Variant) [][]variantComboValue {
 		for _, combo := range combos {
 			for _, value := range variant.Values {
 				item := variantComboValue{AxisID: variant.ID, ValueID: value.ID, Description: value.Description, AxisRefs: variant.References, ValueRefs: value.References}
+				if value.Reference != nil {
+					item.ReferencePath = value.Reference.Path
+					item.ReferenceDescription = value.Reference.Description
+				}
 				extended := append(append([]variantComboValue{}, combo...), item)
 				next = append(next, extended)
 			}

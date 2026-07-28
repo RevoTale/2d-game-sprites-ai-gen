@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/conditioning"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/provider"
@@ -48,6 +50,48 @@ func TestOpenAIUsesSquareProviderCanvasForSmallTargetSprites(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "1120x1120", result.Metadata["providerSize"])
 	require.NotEmpty(t, result.PNG)
+}
+
+func TestOpenAIRequestTimeoutBoundsStalledTransport(t *testing.T) {
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})
+	openAI := provider.OpenAI{
+		APIKey:  "test",
+		Timeout: 10 * time.Millisecond,
+		Client:  &http.Client{Transport: transport},
+	}
+
+	_, err := openAI.Generate(context.Background(), provider.Request{Prompt: "sprite", Size: image.Pt(1024, 1024)})
+
+	require.Error(t, err)
+	require.True(t, errors.Is(err, context.DeadlineExceeded), "unexpected timeout error: %v", err)
+}
+
+func TestFakePrefersIdentityCanvasOverEditablePoseCanvas(t *testing.T) {
+	dir := t.TempDir()
+	posePath := filepath.Join(dir, "target.png")
+	identityPath := filepath.Join(dir, "identity.png")
+	pose := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	pose.SetNRGBA(1, 1, color.NRGBA{R: 220, A: 255})
+	var posePNG bytes.Buffer
+	require.NoError(t, png.Encode(&posePNG, pose))
+	require.NoError(t, os.WriteFile(posePath, posePNG.Bytes(), 0o644))
+	require.NoError(t, os.WriteFile(identityPath, testPNG(t, 8, 8), 0o644))
+
+	result, err := (provider.Fake{}).Generate(context.Background(), provider.Request{
+		Size: image.Pt(8, 8),
+		Inputs: []conditioning.Input{
+			{Role: conditioning.RolePose, Path: posePath},
+			{Role: conditioning.RoleIdentity, Path: identityPath},
+		},
+	})
+
+	require.NoError(t, err)
+	decoded, err := png.Decode(bytes.NewReader(result.PNG))
+	require.NoError(t, err)
+	require.Equal(t, color.NRGBA{R: 120, G: 40, B: 160, A: 255}, color.NRGBAModel.Convert(decoded.At(0, 0)).(color.NRGBA))
 }
 
 func TestOpenAIUsesEditsEndpointWhenReferencesArePresent(t *testing.T) {
@@ -98,6 +142,27 @@ func TestOpenAIUsesEditsEndpointWhenReferencesArePresent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "edits", result.Metadata["endpoint"])
 	require.NotEmpty(t, result.PNG)
+}
+
+func TestOpenAIPreservesSupportedPortraitCanvasForFullUnitEdits(t *testing.T) {
+	referencePath := filepath.Join(t.TempDir(), "unit-board.png")
+	require.NoError(t, os.WriteFile(referencePath, testPNG(t, 8, 8), 0o644))
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		form, err := multipartReader(req)
+		require.NoError(t, err)
+		require.Equal(t, []string{"1024x1536"}, form.Value["size"])
+		return openAIImageResponse(t, 1024, 1536), nil
+	})
+	openAI := provider.OpenAI{APIKey: "test", Client: &http.Client{Transport: transport}}
+
+	result, err := openAI.Generate(context.Background(), provider.Request{
+		Prompt: "full unit board",
+		Size:   image.Pt(1024, 1536),
+		Inputs: []conditioning.Input{{Role: conditioning.RoleIdentity, Path: referencePath}},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "1024x1536", result.Metadata["providerSize"])
 }
 
 func TestOpenAIReportsGenerationErrorBody(t *testing.T) {

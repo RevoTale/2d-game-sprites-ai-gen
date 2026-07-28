@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"io"
 	"mime"
@@ -19,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/conditioning"
 )
@@ -63,16 +65,35 @@ func (f Fake) Generate(_ context.Context, req Request) (Result, error) {
 		return Result{}, errors.New("fake provider requires positive size")
 	}
 	for _, input := range req.Inputs {
-		if input.Role != conditioning.RolePose {
+		if input.Role != conditioning.RoleMask {
 			continue
 		}
 		data, err := os.ReadFile(input.Path)
 		if err != nil {
 			return Result{}, err
 		}
-		config, err := png.DecodeConfig(bytes.NewReader(data))
-		if err == nil && config.Width == req.Size.X && config.Height == req.Size.Y {
-			return Result{PNG: data, Metadata: map[string]string{"provider": "fake", "source": "pose-reference"}}, nil
+		mask, err := png.Decode(bytes.NewReader(data))
+		if err != nil || mask.Bounds().Size() != req.Size {
+			continue
+		}
+		return fakeMaskedBoard(mask)
+	}
+	for _, role := range []conditioning.Role{conditioning.RoleIdentity, conditioning.RolePose} {
+		for _, input := range req.Inputs {
+			if input.Role != role {
+				continue
+			}
+			data, err := os.ReadFile(input.Path)
+			if err != nil {
+				return Result{}, err
+			}
+			config, err := png.DecodeConfig(bytes.NewReader(data))
+			if err == nil && config.Width == req.Size.X && config.Height == req.Size.Y {
+				decoded, decodeErr := png.Decode(bytes.NewReader(data))
+				if decodeErr == nil && imageHasForeground(decoded) {
+					return Result{PNG: data, Metadata: map[string]string{"provider": "fake", "source": "canvas-reference"}}, nil
+				}
+			}
 		}
 	}
 	img := image.NewNRGBA(image.Rect(0, 0, req.Size.X, req.Size.Y))
@@ -95,17 +116,60 @@ func (f Fake) Generate(_ context.Context, req Request) (Result, error) {
 	return Result{PNG: buf.Bytes(), Metadata: map[string]string{"provider": "fake"}}, nil
 }
 
+func imageHasForeground(img image.Image) bool {
+	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
+		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
+			if color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA).A != 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func fakeMaskedBoard(mask image.Image) (Result, error) {
+	img := image.NewNRGBA(mask.Bounds())
+	fill := color.NRGBA{R: 120, G: 80, B: 180, A: 255}
+	for y := mask.Bounds().Min.Y; y < mask.Bounds().Max.Y; y++ {
+		for x := mask.Bounds().Min.X; x < mask.Bounds().Max.X; x++ {
+			if color.NRGBAModel.Convert(mask.At(x, y)).(color.NRGBA).A != 0 || (x > mask.Bounds().Min.X && color.NRGBAModel.Convert(mask.At(x-1, y)).(color.NRGBA).A == 0) || (y > mask.Bounds().Min.Y && color.NRGBAModel.Convert(mask.At(x, y-1)).(color.NRGBA).A == 0) {
+				continue
+			}
+			right := x
+			for right < mask.Bounds().Max.X && color.NRGBAModel.Convert(mask.At(right, y)).(color.NRGBA).A == 0 {
+				right++
+			}
+			bottom := y
+			for bottom < mask.Bounds().Max.Y && color.NRGBAModel.Convert(mask.At(x, bottom)).(color.NRGBA).A == 0 {
+				bottom++
+			}
+			width, height := right-x, bottom-y
+			subject := image.Rect(x+width/4, y+height/6, right-width/4, bottom-height/6)
+			draw.Draw(img, subject, &image.Uniform{C: fill}, image.Point{}, draw.Src)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return Result{}, err
+	}
+	return Result{PNG: buf.Bytes(), Metadata: map[string]string{"provider": "fake", "source": "mask-layout"}}, nil
+}
+
 type OpenAI struct {
-	APIKey string
-	Model  string
-	Client *http.Client
+	APIKey  string
+	Model   string
+	Client  *http.Client
+	Timeout time.Duration
 }
 
 const (
-	openAIMinSquareSide = 1024
-	openAISizeMultiple  = 16
-	openAIMaxEdge       = 3840
-	openAIMaxPixels     = 8294400
+	openAIMinSquareSide  = 1024
+	openAISizeMultiple   = 16
+	openAIMaxEdge        = 3840
+	openAIMinPixels      = 655360
+	openAIMaxPixels      = 8294400
+	openAIMaxAspect      = 3
+	defaultOpenAITimeout = 10 * time.Minute
 )
 
 type openAIImageRequest struct {
@@ -132,10 +196,7 @@ func (o OpenAI) Generate(ctx context.Context, req Request) (Result, error) {
 	if model == "" {
 		model = "gpt-image-2"
 	}
-	client := o.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := openAIHTTPClient(o.Client, o.Timeout)
 	providerSize, err := openAIProviderSize(req.Size)
 	if err != nil {
 		return Result{}, err
@@ -144,6 +205,21 @@ func (o OpenAI) Generate(ctx context.Context, req Request) (Result, error) {
 		return o.generateEdit(ctx, client, apiKey, model, req, providerSize)
 	}
 	return o.generateFromPrompt(ctx, client, apiKey, model, req, providerSize)
+}
+
+func openAIHTTPClient(base *http.Client, timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = defaultOpenAITimeout
+	}
+	if base == nil {
+		return &http.Client{Timeout: timeout}
+	}
+	if base.Timeout > 0 {
+		return base
+	}
+	copy := *base
+	copy.Timeout = timeout
+	return &copy
 }
 
 func (o OpenAI) generateFromPrompt(ctx context.Context, client *http.Client, apiKey, model string, req Request, providerSize image.Point) (Result, error) {
@@ -381,6 +457,10 @@ func openAIProviderSize(target image.Point) (image.Point, error) {
 	if target.X <= 0 || target.Y <= 0 {
 		return image.Point{}, errors.New("openai provider requires positive target size")
 	}
+	rounded := image.Pt(roundUpToMultiple(target.X, openAISizeMultiple), roundUpToMultiple(target.Y, openAISizeMultiple))
+	if validOpenAIProviderSize(rounded) {
+		return rounded, nil
+	}
 	side := max(target.X, target.Y)
 	if side < openAIMinSquareSide {
 		for multiplier := 1; ; multiplier++ {
@@ -398,9 +478,21 @@ func openAIProviderSize(target image.Point) (image.Point, error) {
 	}
 	side = roundUpToMultiple(side, openAISizeMultiple)
 	if side > openAIMaxEdge || side*side > openAIMaxPixels {
-		return image.Point{}, fmt.Errorf("target %dx%d needs provider canvas %dx%d, which exceeds OpenAI image size constraints", target.X, target.Y, side, side)
+		return image.Point{}, fmt.Errorf("target %dx%d cannot satisfy OpenAI image size constraints", target.X, target.Y)
 	}
 	return image.Pt(side, side), nil
+}
+
+func validOpenAIProviderSize(size image.Point) bool {
+	if size.X > openAIMaxEdge || size.Y > openAIMaxEdge {
+		return false
+	}
+	pixels := size.X * size.Y
+	if pixels < openAIMinPixels || pixels > openAIMaxPixels {
+		return false
+	}
+	short, long := min(size.X, size.Y), max(size.X, size.Y)
+	return long <= short*openAIMaxAspect
 }
 
 func roundUpToMultiple(value, multiple int) int {

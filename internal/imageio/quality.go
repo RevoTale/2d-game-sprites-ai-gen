@@ -72,6 +72,8 @@ func compareMasks(candidate, pose *image.NRGBA, guard int) Metrics {
 	}
 	components, secondaryComponents := foregroundComponents(candidate)
 	edgeOccupied := guardOccupied(candidate, guard)
+	cellEdgeOccupied := guardOccupied(candidate, 1)
+	backdropLike := occupiedBoundsLookLikeBackdrop(candidateArea, candidateBounds, bounds)
 	paletteDistance := averagePaletteDistance(candidate, pose)
 	baselineDelta := 1.0
 	if candidateBottom >= bounds.Min.Y && poseBottom >= bounds.Min.Y {
@@ -81,7 +83,24 @@ func compareMasks(candidate, pose *image.NRGBA, guard int) Metrics {
 	if components != 1 || edgeOccupied {
 		score -= 1
 	}
-	return Metrics{SilhouetteOverlap: overlap, EdgeAgreement: edgeAgreement, OccupiedAreaDelta: areaDelta, OccupiedBoundsDelta: boundsDelta, CenterDistance: centerDistance, BaselineDelta: baselineDelta, PaletteDistance: paletteDistance, Components: components, SecondaryComponents: secondaryComponents, EdgeGuardOccupied: edgeOccupied, Score: score}
+	return Metrics{
+		SilhouetteOverlap: overlap, EdgeAgreement: edgeAgreement, OccupiedAreaDelta: areaDelta,
+		OccupiedBoundsDelta: boundsDelta, CenterDistance: centerDistance, BaselineDelta: baselineDelta,
+		PaletteDistance: paletteDistance, Components: components, SecondaryComponents: secondaryComponents,
+		EdgeGuardOccupied: edgeOccupied, CellEdgeOccupied: cellEdgeOccupied, BackdropLike: backdropLike, Score: score,
+	}
+}
+
+func occupiedBoundsLookLikeBackdrop(area int, occupied occupiedBounds, canvas image.Rectangle) bool {
+	if area == 0 {
+		return false
+	}
+	width := occupied.maxX - occupied.minX + 1
+	height := occupied.maxY - occupied.minY + 1
+	if width*5 < canvas.Dx()*3 || height*5 < canvas.Dy()*3 {
+		return false
+	}
+	return area*100 >= width*height*90
 }
 
 type occupiedBounds struct {

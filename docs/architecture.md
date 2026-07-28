@@ -1,43 +1,35 @@
 # Architecture
 
-This document describes package responsibilities for maintainers.
+- `internal/pack`: V3 parsing and reference validation.
+- `internal/targets`: deterministic expansion and deployment paths.
+- `internal/provider`: OpenAI and deterministic fake provider.
+- `internal/imageio`: semantic layouts, foreground ownership, complete-pose
+  recovery, unit-wide registration, structural checks, palette, review sheets,
+  and GIFs.
+- `internal/generate`: manifest V9, animated planning, master/animation provider
+  preparation, prompts, resumable calls, lineage, static generation, and unit
+  artifact assembly.
+- `internal/review`: complete-unit or static-target decisions.
+- `internal/deploy`: dry-run planning, stale-hash protection, staging, rollback,
+  and unit/static atomic replacement.
+- `internal/status`: stage, artifacts, blockers, provenance, and next commands.
 
-## Package Map
+Animated state has one `character-master`, one `animation-board` per configured
+animation, one derived `unit`, and frame targets. Intermediates are `pending`,
+`ready`, or `rejected`; only units and static targets are manually reviewed.
+The character master and animation boards are non-deployable evidence.
+Logical anchors preserve order without acting as clipping boundaries.
+Foreground components must resolve into complete, separated, ordered poses.
 
-- `cmd/sprites-ai-gen`: CLI wiring only.
-- `internal/pack`: parses and validates user-authored pack files.
-- `internal/targets`: expands objects, variants, animations, and frames into deterministic target IDs.
-- `internal/conditioning`: defines typed style, identity, pose, and mask inputs shared across expansion and providers.
-- `internal/generate`: owns manifest-V5 runs, deterministic layout/row planning, production pose discovery, approval
-  gates, force/resume semantics, candidate selection, fixed-cell extraction, and artifact writes.
-- `internal/review`: records accept/reject QA decisions.
-- `internal/status`: renders scoped manifest state, review artifacts, and executable next actions without broadening
-  selectors.
-- `internal/deploy`: validates, stages, and atomically copies accepted static targets or complete animated rows; dry-run
-  uses the same validation path.
-- `internal/imageio`: handles deterministic pixel normalization, palettes, masks, candidate metrics, copying, and sheets.
-- `internal/output`: enforces the generator-owned run layout while preserving the opaque migrated legacy tree.
-- `internal/envfile`: reads simple dotenv files for CLI configuration without shell expansion.
-- `internal/provider`: isolates AI provider implementations behind one interface.
-- `internal/testkit`: provides schema-level fixtures for tests.
+`sprites.json` owns provider-neutral sprite facts: identity, proportions,
+equipment, directions, animation/frame intent, references, sizes, and deploy
+templates. Generator code owns provider canvas geometry, opaque chroma,
+semantic anchors, ownership, attempts, validation, normalization, review state,
+and deployment safety. Animation provider requests send one opaque semantic
+board prefilled from the recovered master and no mask; the separate master
+remains unsent lineage evidence.
 
-## Boundaries
-
-`pack` owns schema validation. Other packages should receive an already validated pack.
-
-`targets` owns expansion and prompt construction. Generation code should not duplicate variant or frame expansion rules.
-
-`generate` owns run state and writes target artifacts. It derives combined directional seed boards and complete
-animation rows from array-order metadata and resolved production poses without adding fields to the pack schema. A row
-becomes a target source only after fixed-layout validation passes. Review and deploy update manifest records instead of
-parallel metadata.
-
-`review` owns visual QA decisions. Provider generation does not imply acceptance.
-
-`deploy` owns previewing and copying accepted target images. Animated rows are its atomic unit. It must not infer,
-repair, crop, or select images.
-
-`envfile` owns dotenv parsing. It must not execute shell syntax or override process environment values.
-
-`provider` owns external AI API calls, typed capability reporting, and provider selection. OpenAI API mechanics stay
-here. The fake provider is deterministic and available only through `--fake`.
+Manifests use temporary-file write, file sync, rename, and directory sync.
+Generation can resume after interruption without repeating recorded provider
+calls. Deployment stages every unit frame before touching production and rolls
+back replacements if manifest persistence fails.

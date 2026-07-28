@@ -17,51 +17,70 @@ import (
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/conditioning"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/imageio"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/provider"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
 )
 
 const (
-	ManifestVersion         = 5
-	candidateQualityVersion = 5
+	ManifestVersion         = 9
+	candidateQualityVersion = 13
 
 	StatusPending        = "pending"
 	StatusAwaitingReview = "awaiting_review"
 	StatusAccepted       = "accepted"
 	StatusRejected       = "rejected"
 	StatusDeployed       = "deployed"
+	StatusReady          = "ready"
+
+	removableBackgroundInstruction = "Render every empty pixel with one uniform flat opaque background color that is visually distinct from the subject. Choose a single high-saturation chroma-key RGB color absent from the subject palette, preferring pure green, magenta, or cyan only when that color does not occur in the subject. Never use gray, black, white, beige, or another low-saturation color as the background. Use the exact same RGB value across the entire canvas so it can be removed cleanly. Do not draw grid lines, dashed guides, checkerboards, gradients, vignettes, lighting falloff, texture, transparency, or shadows."
 )
 
 type Manifest struct {
 	Version       int                           `json:"version"`
 	RunID         string                        `json:"runId"`
 	Intermediates map[string]*IntermediateState `json:"intermediates,omitempty"`
+	Units         map[string]*UnitState         `json:"units,omitempty"`
 	Targets       map[string]*TargetState       `json:"targets"`
 }
 
-// IntermediateState stores directional seed boards and complete animation rows.
+type UnitState struct {
+	ID                string                         `json:"id"`
+	ObjectID          string                         `json:"objectId"`
+	Status            string                         `json:"status"`
+	MasterID          string                         `json:"masterId"`
+	AnimationBoardIDs []string                       `json:"animationBoardIds"`
+	TargetIDs         []string                       `json:"targetIds"`
+	MasterLineage     string                         `json:"masterLineage,omitempty"`
+	AnimationLineages map[string]string              `json:"animationLineages,omitempty"`
+	Transform         *imageio.SemanticUnitTransform `json:"transform,omitempty"`
+	HardRejections    []string                       `json:"hardRejections,omitempty"`
+	Artifacts         ReviewArtifacts                `json:"artifacts,omitempty"`
+	Review            *ReviewRecord                  `json:"review,omitempty"`
+	Deploy            *DeployRecord                  `json:"deploy,omitempty"`
+}
+
+// IntermediateState stores one character master or one complete animation
+// board. Neither intermediate is reviewed or deployed independently.
 type IntermediateState struct {
-	ID                string                            `json:"id"`
-	Kind              string                            `json:"kind"`
-	Status            string                            `json:"status,omitempty"`
-	ObjectID          string                            `json:"objectId"`
-	AnimationID       string                            `json:"animationId,omitempty"`
-	VariantKey        string                            `json:"variantKey,omitempty"`
-	TargetIDs         []string                          `json:"targetIds,omitempty"`
-	Dependencies      []string                          `json:"dependencies,omitempty"`
-	NormalizedPath    string                            `json:"normalizedPath,omitempty"`
-	SourceSHA256      string                            `json:"sourceSha256,omitempty"`
-	Lineage           string                            `json:"lineage,omitempty"`
-	ChromaKey         string                            `json:"chromaKey,omitempty"`
-	EditSourcePath    string                            `json:"editSourcePath,omitempty"`
-	Layout            *imageio.GridLayout               `json:"layout,omitempty"`
-	Extracted         map[string]string                 `json:"extracted,omitempty"`
-	ExtractedPalettes map[string][]imageio.PaletteColor `json:"extractedPalettes,omitempty"`
-	HardRejections    []string                          `json:"hardRejections,omitempty"`
-	Warnings          []string                          `json:"warnings,omitempty"`
-	Artifacts         ReviewArtifacts                   `json:"artifacts,omitempty"`
-	Attempts          []Attempt                         `json:"attempts,omitempty"`
-	Review            *ReviewRecord                     `json:"review,omitempty"`
+	ID             string                  `json:"id"`
+	Kind           string                  `json:"kind"`
+	Status         string                  `json:"status,omitempty"`
+	ObjectID       string                  `json:"objectId"`
+	AnimationID    string                  `json:"animationId,omitempty"`
+	TargetIDs      []string                `json:"targetIds,omitempty"`
+	Dependencies   []string                `json:"dependencies,omitempty"`
+	ParentID       string                  `json:"parentId,omitempty"`
+	NormalizedPath string                  `json:"normalizedPath,omitempty"`
+	SourceSHA256   string                  `json:"sourceSha256,omitempty"`
+	Lineage        string                  `json:"lineage,omitempty"`
+	EditSourcePath string                  `json:"editSourcePath,omitempty"`
+	SemanticLayout *imageio.SemanticLayout `json:"semanticLayout,omitempty"`
+	Poses          []imageio.SemanticPose  `json:"poses,omitempty"`
+	HardRejections []string                `json:"hardRejections,omitempty"`
+	Warnings       []string                `json:"warnings,omitempty"`
+	Artifacts      ReviewArtifacts         `json:"artifacts,omitempty"`
+	Attempts       []Attempt               `json:"attempts,omitempty"`
 }
 
 type TargetState struct {
@@ -70,10 +89,11 @@ type TargetState struct {
 	DeployPath         string                 `json:"deployPath,omitempty"`
 	NormalizedPath     string                 `json:"normalizedPath,omitempty"`
 	Dependencies       []string               `json:"dependencies,omitempty"`
-	SeedBoardID        string                 `json:"seedBoardId,omitempty"`
-	AnimationRowID     string                 `json:"animationRowId,omitempty"`
-	SeedLineage        string                 `json:"seedLineage,omitempty"`
-	RowLineage         string                 `json:"rowLineage,omitempty"`
+	UnitID             string                 `json:"unitId,omitempty"`
+	CharacterMasterID  string                 `json:"characterMasterId,omitempty"`
+	AnimationBoardID   string                 `json:"animationBoardId,omitempty"`
+	MasterLineage      string                 `json:"masterLineage,omitempty"`
+	AnimationLineage   string                 `json:"animationLineage,omitempty"`
 	SourceCandidate    string                 `json:"sourceCandidate,omitempty"`
 	CellIndex          int                    `json:"cellIndex,omitempty"`
 	ProductionEligible bool                   `json:"productionEligible"`
@@ -99,30 +119,39 @@ type NormalizationRecord struct {
 	Scale          float64 `json:"scale,omitempty"`
 	Baseline       int     `json:"baseline,omitempty"`
 	CenterX        int     `json:"centerX,omitempty"`
+	OffsetX        int     `json:"offsetX,omitempty"`
+	OffsetY        int     `json:"offsetY,omitempty"`
 }
 
 type ReviewArtifacts struct {
-	PromptPath         string   `json:"promptPath,omitempty"`
-	QAPath             string   `json:"qaPath,omitempty"`
-	CandidateSheetPath string   `json:"candidateSheetPath,omitempty"`
-	ContactSheetPath   string   `json:"contactSheetPath,omitempty"`
-	AnimationGIFPath   string   `json:"animationGifPath,omitempty"`
-	FramePaths         []string `json:"framePaths,omitempty"`
+	PromptPath                string   `json:"promptPath,omitempty"`
+	EvidencePath              string   `json:"evidencePath,omitempty"`
+	QAPath                    string   `json:"qaPath,omitempty"`
+	CurrentReferenceSheetPath string   `json:"currentReferenceSheetPath,omitempty"`
+	MasterSheetPath           string   `json:"masterSheetPath,omitempty"`
+	CompleteUnitSheetPath     string   `json:"completeUnitSheetPath,omitempty"`
+	CandidateSheetPath        string   `json:"candidateSheetPath,omitempty"`
+	BoardMetricsPath          string   `json:"boardMetricsPath,omitempty"`
+	IdentityComparisonPath    string   `json:"identityComparisonPath,omitempty"`
+	OwnershipOverlayPath      string   `json:"ownershipOverlayPath,omitempty"`
+	RecoveredPosePaths        []string `json:"recoveredPosePaths,omitempty"`
+	RecoveredPoseSheetPath    string   `json:"recoveredPoseSheetPath,omitempty"`
+	ContactSheetPath          string   `json:"contactSheetPath,omitempty"`
+	AnimationGIFPath          string   `json:"animationGifPath,omitempty"`
+	AnimationBoardPaths       []string `json:"animationBoardPaths,omitempty"`
+	AnimationGIFPaths         []string `json:"animationGifPaths,omitempty"`
+	FramePaths                []string `json:"framePaths,omitempty"`
 }
 
 type Attempt struct {
 	ID                string              `json:"id"`
-	RawPath           string              `json:"rawPath,omitempty"`
 	CreatedAt         string              `json:"createdAt"`
 	Metadata          map[string]string   `json:"metadata,omitempty"`
 	References        []ReferenceEvidence `json:"references,omitempty"`
 	Candidates        []Candidate         `json:"candidates,omitempty"`
 	SelectedCandidate string              `json:"selectedCandidate,omitempty"`
 	PoseGuideSHA256   string              `json:"poseGuideSha256,omitempty"`
-	MaskSHA256        string              `json:"maskSha256,omitempty"`
 	Kind              string              `json:"kind,omitempty"`
-	ParentLineage     string              `json:"parentLineage,omitempty"`
-	CorrectedFrame    string              `json:"correctedFrame,omitempty"`
 }
 
 type Candidate struct {
@@ -140,22 +169,27 @@ type Candidate struct {
 }
 
 type ReferenceEvidence struct {
-	Role        conditioning.Role `json:"role,omitempty"`
-	Path        string            `json:"path"`
-	Description string            `json:"description,omitempty"`
-	SHA256      string            `json:"sha256"`
+	ID             string `json:"id"`
+	Role           string `json:"role"`
+	Authority      string `json:"authority"`
+	Description    string `json:"description,omitempty"`
+	SourcePath     string `json:"sourcePath"`
+	SourceSHA256   string `json:"sourceSha256"`
+	SentPath       string `json:"sentPath,omitempty"`
+	SentSHA256     string `json:"sentSha256,omitempty"`
+	ProviderIndex  int    `json:"providerIndex"`
+	SentToProvider bool   `json:"sentToProvider"`
 }
 
 type ReviewRecord struct {
 	Status     string `json:"status"`
 	Reason     string `json:"reason,omitempty"`
-	Candidate  string `json:"candidate,omitempty"`
 	ReviewedAt string `json:"reviewedAt"`
 }
 
 type DeployRecord struct {
 	Path       string   `json:"path"`
-	Row        string   `json:"row,omitempty"`
+	GroupID    string   `json:"groupId,omitempty"`
 	DeployedAt string   `json:"deployedAt"`
 	Skipped    []string `json:"skipped,omitempty"`
 }
@@ -208,33 +242,30 @@ func Run(ctx context.Context, all []targets.Target, gen provider.Provider, opts 
 		}
 		opts.RunID = runID
 	}
-	plan, err := buildPlan(all, selected, opts.DeployDir)
+	if err := validateRunID(opts.RunID); err != nil {
+		return Result{}, err
+	}
+	plan, err := buildAnimatedPlan(all, selected, opts.Filter)
 	if err != nil {
 		return Result{}, err
 	}
-	if opts.Filter.Frame != "" {
-		for _, row := range plan.Rows {
-			for index, path := range row.ProductionPaths {
-				if path == "" {
-					return Result{}, fmt.Errorf("frame repair requires a complete current production row; %q is missing", row.Targets[index].ID)
-				}
-			}
-		}
-	}
-	if err := preflight(plan, gen.Capabilities(), opts.DeployDir); err != nil {
+	if err := preflightAnimated(plan, gen.Capabilities(), opts.DeployDir); err != nil {
 		return Result{}, err
 	}
 	manifest, err := LoadOrCreate(opts.OutputDir, opts.RunID, all)
 	if err != nil {
 		return Result{}, err
 	}
-	if err := captureProductionEvidence(manifest, selected, opts.DeployDir, opts.Force || opts.Filter.Frame != ""); err != nil {
+	if err := validateAnimatedStart(manifest, plan, opts); err != nil {
+		return Result{}, err
+	}
+	if err := captureProductionEvidence(manifest, selected, opts.DeployDir, opts.Force && len(plan.Units) == 0); err != nil {
 		return Result{}, err
 	}
 	if err := Save(opts.OutputDir, opts.RunID, manifest); err != nil {
 		return Result{}, err
 	}
-	return runWorkflow(ctx, selected, plan, gen, opts, manifest)
+	return runAnimatedWorkflow(ctx, selected, plan, gen, opts, manifest)
 }
 
 func captureProductionEvidence(manifest *Manifest, selected []targets.Target, deployDir string, refresh bool) error {
@@ -279,6 +310,7 @@ func generateStaticTarget(ctx context.Context, gen provider.Provider, opts Optio
 	if attemptIndex < 0 {
 		state.Review = nil
 		state.Status = StatusPending
+		state.SourceCandidate = ""
 		state.ProductionEligible = false
 		state.HardRejections = nil
 		attemptIndex = len(state.Attempts)
@@ -291,7 +323,8 @@ func generateStaticTarget(ctx context.Context, gen provider.Provider, opts Optio
 	if err := os.MkdirAll(attemptDir, 0o755); err != nil {
 		return err
 	}
-	inputs := append([]conditioning.Input(nil), target.Inputs...)
+	inputs := filterInputs(target.Inputs, conditioning.RoleStyle, conditioning.RoleIdentity)
+	reviewOnly := filterInputs(target.Inputs, conditioning.RolePose)
 	var palette []imageio.PaletteColor
 	if posePath != "" {
 		inputs = append(inputs, conditioning.Input{Role: conditioning.RoleIdentity, Path: posePath, Description: "Existing production asset used for identity, layout, and category palette.", Required: true})
@@ -305,17 +338,26 @@ func generateStaticTarget(ctx context.Context, gen provider.Provider, opts Optio
 	if err != nil {
 		return err
 	}
-	evidence, err := collectReferenceEvidence(inputs)
+	evidence, err := collectReferenceEvidence(inputs, reviewOnly)
 	if err != nil {
 		return err
 	}
-	prompt := strings.TrimSpace(target.Prompt) + "\n\nReturn one isolated subject only. No sheet, label, border, shadow, or scenery. Use clean clustered color ramps, minimal dithering, and a removable background.\n"
+	opaqueTile := target.RenderMode == pack.RenderModeOpaqueTile
+	protocol := "Return one isolated subject only. No sheet, label, border, shadow, or scenery. Use clean clustered color ramps and minimal dithering. " + removableBackgroundInstruction
+	if opaqueTile {
+		protocol = "Return one full-bleed opaque terrain texture. Fill every pixel to every edge: no transparency, empty background, padding, margin, isolated slab, floating island, frame, or border. The left and right edges and the top and bottom edges must join without a visible seam when this image is repeated. Preserve a consistent orthographic ground-plane scale across the entire image. Use clean clustered color ramps and minimal dithering."
+	}
+	prompt := strings.TrimSpace(target.Prompt) + "\n\n" + protocol + "\n"
 	promptPath := filepath.Join(targetDir, "prompt.md")
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
 		return err
 	}
 	state.Artifacts.PromptPath = promptPath
 	attempt.References = evidence
+	state.Artifacts.EvidencePath = filepath.Join(attemptDir, "evidence.json")
+	if err := writeEvidence(state.Artifacts.EvidencePath, evidence); err != nil {
+		return err
+	}
 	if posePath != "" {
 		attempt.PoseGuideSHA256, err = fileSHA256(posePath)
 		if err != nil {
@@ -326,7 +368,7 @@ func generateStaticTarget(ctx context.Context, gen provider.Provider, opts Optio
 		return err
 	}
 	opts.report(ProgressEvent{Stage: ProgressTargetGenerating, TargetID: target.ID, Current: current, Total: total})
-	removeBackground := true
+	removeBackground := !opaqueTile
 	for candidateIndex := len(attempt.Candidates); candidateIndex < 1; candidateIndex++ {
 		candidateID := fmt.Sprintf("%02d", candidateIndex+1)
 		opts.report(ProgressEvent{Stage: ProgressCandidateGenerating, TargetID: target.ID, Current: current, Total: total, Candidate: candidateIndex + 1, Candidates: 1})
@@ -358,11 +400,21 @@ func generateStaticTarget(ctx context.Context, gen provider.Provider, opts Optio
 			return err
 		}
 		var hardRejections []string
-		if metrics.EdgeGuardOccupied {
-			hardRejections = append(hardRejections, "edge_guard_occupied")
-		}
-		if metrics.Components != 1 {
-			hardRejections = append(hardRejections, fmt.Sprintf("foreground_components_%d", metrics.Components))
+		if opaqueTile {
+			hasTransparency, transparencyErr := imageio.HasTransparency(normalizedPath)
+			if transparencyErr != nil {
+				return transparencyErr
+			}
+			if hasTransparency {
+				hardRejections = append(hardRejections, "opaque_tile_has_transparency")
+			}
+		} else {
+			if metrics.EdgeGuardOccupied {
+				hardRejections = append(hardRejections, "edge_guard_occupied")
+			}
+			if metrics.Components != 1 {
+				hardRejections = append(hardRejections, fmt.Sprintf("foreground_components_%d", metrics.Components))
+			}
 		}
 		var warnings []string
 		if metrics.SecondaryComponents != 0 {
@@ -397,6 +449,9 @@ func generateStaticTarget(ctx context.Context, gen provider.Provider, opts Optio
 	}
 	selected := bestCandidate(attempt.Candidates)
 	state.CapabilityMode = "static"
+	if opaqueTile {
+		state.CapabilityMode = "static-opaque-tile"
+	}
 	state.ProductionEligible = true
 	state.Normalization = &NormalizationRecord{ScaleAlgorithm: "area", PaletteMethod: "deterministic-median-cut", MaximumColors: 32, ColorSpace: "linear-srgb", Dithering: false, AlphaThreshold: 128}
 	if selected == nil {
@@ -410,6 +465,7 @@ func generateStaticTarget(ctx context.Context, gen provider.Provider, opts Optio
 	}
 	state.Status = StatusAwaitingReview
 	state.HardRejections = nil
+	state.SourceCandidate = attempt.ID + "/" + selected.ID
 	state.NormalizedPath = filepath.Join(targetDir, "normalized.png")
 	state.Palette = selected.Palette
 	if err := imageio.CopyFile(selected.NormalizedPath, state.NormalizedPath); err != nil {
@@ -420,6 +476,7 @@ func generateStaticTarget(ctx context.Context, gen provider.Provider, opts Optio
 		return err
 	}
 	artifacts.PromptPath = promptPath
+	artifacts.EvidencePath = state.Artifacts.EvidencePath
 	state.Artifacts = artifacts
 	attempt.SelectedCandidate = selected.ID
 	if len(state.Palette) == 0 {
@@ -428,7 +485,11 @@ func generateStaticTarget(ctx context.Context, gen provider.Provider, opts Optio
 	if err := imageio.WritePalette(filepath.Join(targetDir, "palette.json"), state.Palette); err != nil {
 		return err
 	}
-	if err := writeQA(targetDir, "generated", "Needs mandatory visual QA for identity, composition, texture, edge cleanliness, and game-scale readability."); err != nil {
+	qaNote := "Needs mandatory visual QA for identity, composition, texture, edge cleanliness, and game-scale readability."
+	if opaqueTile {
+		qaNote = "Needs mandatory visual QA for texture identity, orthographic scale, edge-to-edge coverage, repeated-edge seams, and game-scale readability."
+	}
+	if err := writeQA(targetDir, "generated", qaNote); err != nil {
 		return err
 	}
 	state.Artifacts.QAPath = filepath.Join(targetDir, "qa.md")
@@ -447,7 +508,7 @@ func LoadOrCreate(outputDir, runID string, all []targets.Target) (*Manifest, err
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	manifest := &Manifest{Version: ManifestVersion, RunID: runID, Intermediates: map[string]*IntermediateState{}, Targets: map[string]*TargetState{}}
+	manifest := &Manifest{Version: ManifestVersion, RunID: runID, Intermediates: map[string]*IntermediateState{}, Units: map[string]*UnitState{}, Targets: map[string]*TargetState{}}
 	for _, target := range all {
 		manifest.Targets[target.ID] = pendingState(target)
 	}
@@ -455,6 +516,9 @@ func LoadOrCreate(outputDir, runID string, all []targets.Target) (*Manifest, err
 }
 
 func Load(outputDir, runID string) (*Manifest, error) {
+	if err := validateRunID(runID); err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(ManifestPath(outputDir, runID))
 	if err != nil {
 		return nil, err
@@ -475,15 +539,38 @@ func Load(outputDir, runID string) (*Manifest, error) {
 	if manifest.Intermediates == nil {
 		manifest.Intermediates = map[string]*IntermediateState{}
 	}
+	if manifest.Units == nil {
+		manifest.Units = map[string]*UnitState{}
+	}
+	RefreshUnitStatuses(&manifest)
 	return &manifest, nil
 }
 
 func Save(outputDir, runID string, manifest *Manifest) error {
+	if err := validateRunID(runID); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writeJSONData(ManifestPath(outputDir, runID), data)
+}
+
+func validateRunID(runID string) error {
+	if runID == "" {
+		return fmt.Errorf("invalid run id %q: use letters, digits, dots, underscores, or hyphens", runID)
+	}
+	for index := 0; index < len(runID); index++ {
+		value := runID[index]
+		letter := value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+		digit := value >= '0' && value <= '9'
+		if letter || digit || index > 0 && (value == '.' || value == '_' || value == '-') {
+			continue
+		}
+		return fmt.Errorf("invalid run id %q: use letters, digits, dots, underscores, or hyphens", runID)
+	}
+	return nil
 }
 
 func writeJSONData(path string, data []byte) error {
@@ -577,20 +664,70 @@ func writeCandidateMetrics(path string, metrics imageio.Metrics, hardRejections 
 	return writeJSONData(path, data)
 }
 
-func collectReferenceEvidence(inputs []conditioning.Input) ([]ReferenceEvidence, error) {
-	evidence := make([]ReferenceEvidence, 0, len(inputs))
-	for _, input := range inputs {
-		hash := input.SHA256
-		if hash == "" {
-			var err error
-			hash, err = fileSHA256(input.Path)
-			if err != nil {
-				return nil, fmt.Errorf("hash generation input %q: %w", input.Path, err)
-			}
+func collectReferenceEvidence(sent, reviewOnly []conditioning.Input) ([]ReferenceEvidence, error) {
+	evidence := make([]ReferenceEvidence, 0, len(sent)+len(reviewOnly))
+	providerIndex := 0
+	for _, input := range sent {
+		index := 0
+		if input.Role != conditioning.RoleMask {
+			providerIndex++
+			index = providerIndex
 		}
-		evidence = append(evidence, ReferenceEvidence{Role: input.Role, Path: input.Path, Description: input.Description, SHA256: hash})
+		item, err := referenceEvidence(input, true, index)
+		if err != nil {
+			return nil, err
+		}
+		evidence = append(evidence, item)
+	}
+	for _, input := range reviewOnly {
+		item, err := referenceEvidence(input, false, 0)
+		if err != nil {
+			return nil, err
+		}
+		evidence = append(evidence, item)
 	}
 	return evidence, nil
+}
+
+func referenceEvidence(input conditioning.Input, sent bool, providerIndex int) (ReferenceEvidence, error) {
+	sourcePath := input.SourcePath
+	if sourcePath == "" {
+		sourcePath = input.Path
+	}
+	sourceHash, err := fileSHA256(sourcePath)
+	if err != nil {
+		return ReferenceEvidence{}, fmt.Errorf("hash evidence source %q: %w", sourcePath, err)
+	}
+	id := input.ID
+	if id == "" {
+		id = input.Role.String() + ":" + filepath.Base(sourcePath)
+	}
+	authority := input.Authority
+	if authority == "" {
+		authority = input.Role.String()
+	}
+	item := ReferenceEvidence{ID: id, Role: input.Role.String(), Authority: authority, Description: input.Description, SourcePath: sourcePath, SourceSHA256: sourceHash, SentToProvider: sent, ProviderIndex: providerIndex}
+	if sent {
+		item.SentPath = input.Path
+		item.SentSHA256 = input.SHA256
+		if item.SentSHA256 == "" {
+			item.SentSHA256, err = fileSHA256(input.Path)
+			if err != nil {
+				return ReferenceEvidence{}, fmt.Errorf("hash provider input %q: %w", input.Path, err)
+			}
+		}
+	}
+	return item, nil
+}
+
+func writeEvidence(path string, evidence []ReferenceEvidence) error {
+	data, err := json.MarshalIndent(struct {
+		Evidence []ReferenceEvidence `json:"evidence"`
+	}{Evidence: evidence}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeJSONData(path, data)
 }
 
 func hydrateInputHashes(inputs []conditioning.Input) ([]conditioning.Input, error) {

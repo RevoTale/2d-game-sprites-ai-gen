@@ -17,6 +17,13 @@ import (
 
 const defaultPaletteSize = 32
 
+const (
+	backgroundExactDelta  = 72
+	backgroundSpillDelta  = 270
+	backgroundSpillExcess = 24
+	backgroundSpillPasses = 6
+)
+
 type PaletteColor struct {
 	R uint8 `json:"r"`
 	G uint8 `json:"g"`
@@ -34,6 +41,8 @@ type Metrics struct {
 	Components          int     `json:"components"`
 	SecondaryComponents int     `json:"secondaryComponents,omitempty"`
 	EdgeGuardOccupied   bool    `json:"edgeGuardOccupied"`
+	CellEdgeOccupied    bool    `json:"cellEdgeOccupied"`
+	BackdropLike        bool    `json:"backdropLike"`
 	Score               float64 `json:"score"`
 }
 
@@ -123,37 +132,91 @@ func removeEdgeBackground(source image.Image) *image.NRGBA {
 	}
 	background := color.NRGBA{R: uint8(red / len(corners)), G: uint8(green / len(corners)), B: uint8(blue / len(corners)), A: 255}
 	for _, corner := range corners {
-		if colorDelta(corner, background) > 72 {
+		if colorDelta(corner, background) > backgroundExactDelta {
 			return img
 		}
 	}
-	seen := make([]bool, bounds.Dx()*bounds.Dy())
-	queue := make([]image.Point, 0, 2*bounds.Dx()+2*bounds.Dy())
-	for x := bounds.Min.X; x < bounds.Max.X; x++ {
-		queue = append(queue, image.Pt(x, bounds.Min.Y), image.Pt(x, bounds.Max.Y-1))
-	}
-	for y := bounds.Min.Y + 1; y < bounds.Max.Y-1; y++ {
-		queue = append(queue, image.Pt(bounds.Min.X, y), image.Pt(bounds.Max.X-1, y))
-	}
-	for len(queue) > 0 {
-		point := queue[0]
-		queue = queue[1:]
-		index := (point.Y-bounds.Min.Y)*bounds.Dx() + point.X - bounds.Min.X
-		if seen[index] {
-			continue
-		}
-		seen[index] = true
-		if colorDelta(img.NRGBAAt(point.X, point.Y), background) > 72 {
-			continue
-		}
-		img.SetNRGBA(point.X, point.Y, color.NRGBA{})
-		for _, next := range [...]image.Point{{X: point.X - 1, Y: point.Y}, {X: point.X + 1, Y: point.Y}, {X: point.X, Y: point.Y - 1}, {X: point.X, Y: point.Y + 1}} {
-			if next.In(bounds) {
-				queue = append(queue, next)
+	// Clear the exact chroma key everywhere, including enclosed negative space
+	// between limbs and equipment. The provider is explicitly required to use
+	// a background color that is distinct from the subject.
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if colorDelta(img.NRGBAAt(x, y), background) <= backgroundExactDelta {
+				img.SetNRGBA(x, y, color.NRGBA{})
 			}
 		}
 	}
+	// Generated pixel art can contain a narrow antialiased chroma fringe even
+	// around an otherwise flat background. Peel only background-hued pixels
+	// touching already transparent background; unrelated interior colors stay.
+	for pass := 0; pass < backgroundSpillPasses; pass++ {
+		var clear []image.Point
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				value := img.NRGBAAt(x, y)
+				if value.A == 0 || !isChromaSpill(value, background) || !touchesTransparency(img, image.Pt(x, y)) {
+					continue
+				}
+				clear = append(clear, image.Pt(x, y))
+			}
+		}
+		if len(clear) == 0 {
+			break
+		}
+		for _, point := range clear {
+			img.SetNRGBA(point.X, point.Y, color.NRGBA{})
+		}
+	}
 	return img
+}
+
+func isChromaSpill(value, background color.NRGBA) bool {
+	return colorDelta(value, background) <= backgroundSpillDelta &&
+		chromaChannelExcess(value, background) >= backgroundSpillExcess
+}
+
+func chromaChannelExcess(value, background color.NRGBA) int {
+	key := [...]int{int(background.R), int(background.G), int(background.B)}
+	pixel := [...]int{int(value.R), int(value.G), int(value.B)}
+	minimum, maximum := key[0], key[0]
+	for _, channel := range key[1:] {
+		minimum = min(minimum, channel)
+		maximum = max(maximum, channel)
+	}
+	if maximum-minimum < backgroundExactDelta {
+		return 0
+	}
+	keyThreshold := minimum + (maximum-minimum)/2
+	minimumKey, maximumOther := 255, 0
+	keyChannels, otherChannels := 0, 0
+	for index, channel := range key {
+		if channel >= keyThreshold {
+			minimumKey = min(minimumKey, pixel[index])
+			keyChannels++
+			continue
+		}
+		maximumOther = max(maximumOther, pixel[index])
+		otherChannels++
+	}
+	if keyChannels == 0 || otherChannels == 0 {
+		return 0
+	}
+	return minimumKey - maximumOther
+}
+
+func touchesTransparency(img *image.NRGBA, point image.Point) bool {
+	for y := point.Y - 1; y <= point.Y+1; y++ {
+		for x := point.X - 1; x <= point.X+1; x++ {
+			neighbor := image.Pt(x, y)
+			if neighbor == point || !neighbor.In(img.Bounds()) {
+				continue
+			}
+			if img.NRGBAAt(x, y).A == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func colorDelta(left, right color.NRGBA) int {
@@ -180,6 +243,26 @@ func PaletteFromPNG(path string, limit int) ([]PaletteColor, error) {
 		limit = defaultPaletteSize
 	}
 	return extractPalette(img, limit), nil
+}
+
+// SharedPaletteFromPNGs derives one deterministic palette from every supplied
+// image so a complete unit uses the same colors across all animation boards.
+func SharedPaletteFromPNGs(paths []string, limit int) ([]PaletteColor, error) {
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("shared palette requires at least one PNG")
+	}
+	counts := make(map[uint32]int)
+	for _, path := range paths {
+		img, err := decodeNRGBA(path)
+		if err != nil {
+			return nil, err
+		}
+		accumulatePaletteCounts(counts, img)
+	}
+	if limit <= 0 {
+		limit = defaultPaletteSize
+	}
+	return paletteFromCounts(counts, limit), nil
 }
 
 func normalizeImage(img image.Image, width, height int) (*image.NRGBA, error) {
@@ -236,6 +319,11 @@ type weightedColor struct {
 
 func extractPalette(img *image.NRGBA, limit int) []PaletteColor {
 	counts := make(map[uint32]int)
+	accumulatePaletteCounts(counts, img)
+	return paletteFromCounts(counts, limit)
+}
+
+func accumulatePaletteCounts(counts map[uint32]int, img *image.NRGBA) {
 	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
 		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
 			c := img.NRGBAAt(x, y)
@@ -246,6 +334,9 @@ func extractPalette(img *image.NRGBA, limit int) []PaletteColor {
 			counts[key]++
 		}
 	}
+}
+
+func paletteFromCounts(counts map[uint32]int, limit int) []PaletteColor {
 	colors := make([]weightedColor, 0, len(counts))
 	for key, count := range counts {
 		colors = append(colors, weightedColor{color: PaletteColor{R: uint8(key >> 16), G: uint8(key >> 8), B: uint8(key)}, count: count})

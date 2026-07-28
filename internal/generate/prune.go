@@ -53,14 +53,6 @@ func intermediateMatches(intermediate *IntermediateState, wanted map[string]bool
 func pruneAttempts(attempts []Attempt) (int, error) {
 	removed := 0
 	for attemptIndex := range attempts {
-		if attempts[attemptIndex].RawPath != "" {
-			count, err := removeIfPresent(attempts[attemptIndex].RawPath)
-			if err != nil {
-				return removed, err
-			}
-			removed += count
-			attempts[attemptIndex].RawPath = ""
-		}
 		for candidateIndex := range attempts[attemptIndex].Candidates {
 			path := attempts[attemptIndex].Candidates[candidateIndex].RawPath
 			if path == "" {

@@ -27,15 +27,15 @@ func WritePackWithReferences(t *testing.T) string {
 	require.NoError(t, err)
 	content := string(data)
 	content = strings.Replace(content, `"deployDir": "deploy",`, `"deployDir": "deploy",
-  "references": [{"path":"style.png","description":"Style."}],`, 1)
+  "references": [{"id":"style","role":"style","path":"style.png","description":"Style."}],`, 1)
 	content = strings.Replace(content, `"description": "Elegant demonic duelist.",`, `"description": "Elegant demonic duelist.",
-      "references": [{"path":"identity.png","description":"Identity."}],`, 1)
+      "references": [{"id":"identity","role":"identity","path":"identity.png","description":"Identity."}],`, 1)
 	content = strings.Replace(content, `"description": "Facing direction.",`, `"description": "Facing direction.",
-          "references": [{"path":"variant.png","description":"Variant pose."}],`, 1)
-	content = strings.Replace(content, `{ "id": "right", "description": "Right side view." }`, `{ "id": "right", "description": "Right side view.", "references": [{"path":"direction.png","description":"Direction pose."}] }`, 1)
+          "references": [{"id":"variant-motion","role":"motion","path":"variant.png","description":"Variant pose."}],`, 1)
+	content = strings.Replace(content, `{ "id": "right", "description": "Right side view." }`, `{ "id": "right", "description": "Right side view.", "references": [{"id":"direction-motion","role":"motion","path":"direction.png","description":"Direction pose."}] }`, 1)
 	content = strings.Replace(content, `"description": "Attack motion.",`, `"description": "Attack motion.",
-          "references": [{"path":"animation.png","description":"Animation pose."}],`, 1)
-	content = strings.Replace(content, `{ "id": "contact", "description": "Hit." }`, `{ "id": "contact", "description": "Hit.", "references": [{"path":"frame.png","description":"Frame pose."}] }`, 1)
+          "references": [{"id":"animation-motion","role":"motion","path":"animation.png","description":"Animation pose."}],`, 1)
+	content = strings.Replace(content, `{ "id": "contact", "description": "Hit." }`, `{ "id": "contact", "description": "Hit.", "references": [{"id":"frame-motion","role":"motion","path":"frame.png","description":"Frame pose."}] }`, 1)
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	return dir
 }
@@ -62,21 +62,22 @@ func WritePack(t *testing.T) string {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("smooth pixel art"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 1,
+  "version": 3,
   "outputDir": "output",
   "deployDir": "deploy",
   "objects": [
     {
       "id": "blood-duelist",
       "description": "Elegant demonic duelist.",
+      "identityLocks": ["Gold horned silhouette.", "Sword remains in the right hand."],
       "size": { "width": 16, "height": 16 },
       "variants": [
         {
           "id": "direction",
           "description": "Facing direction.",
           "values": [
-            { "id": "right", "description": "Right side view." },
-            { "id": "up", "description": "Back view." }
+            { "id": "right", "description": "Right side view.", "reference": {"path":"direction-right.png","description":"Current right-facing identity reference."} },
+            { "id": "up", "description": "Back view.", "reference": {"path":"direction-up.png","description":"Current up-facing identity reference."} }
           ]
         }
       ],
@@ -102,6 +103,69 @@ func WritePack(t *testing.T) string {
     }
   ]
 }`), 0o644))
+	for _, name := range []string{"direction-right.png", "direction-up.png"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), PNG(t, 16, 16), 0o644))
+	}
+	return dir
+}
+
+func WriteFullUnitPack(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("smooth pixel art"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
+  "version": 3,
+  "outputDir": "output",
+  "deployDir": "deploy",
+  "objects": [{
+    "id": "relic-knight",
+    "description": "Heavy blue-and-gold knight with a crested helmet, kite shield, and sword.",
+    "identityLocks": [
+      "Helmet has a swept gold crest and angular narrow visor.",
+      "Shield remains a blue-and-gold kite shield with cross heraldry.",
+      "Sword and shield remain on their established sides."
+    ],
+    "size": {"width": 320, "height": 320},
+    "variants": [{
+      "id": "direction",
+      "description": "Authored battlefield direction.",
+      "values": [
+        {"id":"down","description":"Front-facing down view.","reference":{"path":"deploy/units/relic-knight__walk__down__00.png","description":"Current down-facing identity reference."}},
+        {"id":"up","description":"Back-facing up view.","reference":{"path":"deploy/units/relic-knight__walk__up__00.png","description":"Current up-facing identity reference."}},
+        {"id":"right","description":"Side view facing right.","reference":{"path":"deploy/units/relic-knight__walk__right__00.png","description":"Current right-facing identity reference."}}
+      ]
+    }],
+    "animations": [
+      {"id":"walk","description":"Grounded four-beat walk.","frames":[
+        {"id":"00","description":"Neutral ready step."},
+        {"id":"01","description":"Forward step."},
+        {"id":"02","description":"Opposite passing step."},
+        {"id":"03","description":"Settled step."}
+      ]},
+      {"id":"attack","description":"Sword strike with ready, windup, contact, and recovery.","frames":[
+        {"id":"00","description":"Ready stance."},
+        {"id":"01","description":"Windup."},
+        {"id":"02","description":"Contact strike."},
+        {"id":"03","description":"Recovery."}
+      ]}
+    ],
+    "deploy":{"pathTemplate":"units/{object}__{animation}__{variant.direction}__{frame}.png"}
+  }, {
+    "id":"grass",
+    "description":"Smooth grass tile.",
+    "size":{"width":16,"height":16},
+    "deploy":{"pathTemplate":"terrain/{object}.png"}
+  }]
+}`), 0o644))
+	for _, direction := range []string{"down", "up", "right"} {
+		for _, animation := range []string{"walk", "attack"} {
+			for _, frame := range []string{"00", "01", "02", "03"} {
+				path := filepath.Join(dir, "deploy", "units", "relic-knight__"+animation+"__"+direction+"__"+frame+".png")
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+				require.NoError(t, os.WriteFile(path, PNGWithMargin(t, 320, 320, 40), 0o644))
+			}
+		}
+	}
 	return dir
 }
 
@@ -115,6 +179,14 @@ func LoadTargets(t *testing.T, dir string) (*pack.Pack, []targets.Target) {
 		for inputIndex := range all[targetIndex].Inputs {
 			if !filepath.IsAbs(all[targetIndex].Inputs[inputIndex].Path) {
 				all[targetIndex].Inputs[inputIndex].Path = filepath.Join(dir, all[targetIndex].Inputs[inputIndex].Path)
+			}
+			if all[targetIndex].Inputs[inputIndex].SourcePath != "" && !filepath.IsAbs(all[targetIndex].Inputs[inputIndex].SourcePath) {
+				all[targetIndex].Inputs[inputIndex].SourcePath = filepath.Join(dir, all[targetIndex].Inputs[inputIndex].SourcePath)
+			}
+		}
+		for variantIndex := range all[targetIndex].Variants {
+			if all[targetIndex].Variants[variantIndex].ReferencePath != "" && !filepath.IsAbs(all[targetIndex].Variants[variantIndex].ReferencePath) {
+				all[targetIndex].Variants[variantIndex].ReferencePath = filepath.Join(dir, all[targetIndex].Variants[variantIndex].ReferencePath)
 			}
 		}
 	}

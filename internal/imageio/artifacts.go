@@ -12,7 +12,11 @@ import (
 	"path/filepath"
 )
 
-const candidateReviewHeaderHeight = 40
+const (
+	candidateReviewHeaderHeight = 40
+	labeledGridHeaderHeight     = 40
+	labeledGridRowLabelWidth    = 112
+)
 
 var reviewGlyphs = map[rune][7]uint8{
 	'0': {14, 17, 19, 21, 25, 17, 14},
@@ -31,9 +35,19 @@ var reviewGlyphs = map[rune][7]uint8{
 	'E': {31, 16, 16, 30, 16, 16, 31},
 	'I': {31, 4, 4, 4, 4, 4, 31},
 	'L': {16, 16, 16, 16, 16, 16, 31},
+	'G': {14, 17, 16, 23, 17, 17, 15},
+	'H': {17, 17, 17, 31, 17, 17, 17},
 	'N': {17, 25, 21, 19, 17, 17, 17},
+	'K': {17, 18, 20, 24, 20, 18, 17},
+	'M': {17, 27, 21, 21, 17, 17, 17},
+	'O': {14, 17, 17, 17, 17, 17, 14},
+	'P': {30, 17, 17, 30, 16, 16, 16},
+	'R': {30, 17, 17, 30, 20, 18, 17},
+	'S': {15, 16, 16, 14, 1, 1, 30},
 	'T': {31, 4, 4, 4, 4, 4, 4},
+	'U': {17, 17, 17, 17, 17, 17, 14},
 	'V': {17, 17, 17, 17, 17, 10, 4},
+	'W': {17, 17, 17, 21, 21, 21, 10},
 }
 
 // CandidateReviewTile describes one fixed-board candidate and its mechanical
@@ -107,21 +121,95 @@ func AssembleHorizontalSheet(paths []string, out string) error {
 // WriteNearestNeighborContactSheet enlarges native sprite frames without
 // interpolation so pixel clusters remain readable during visual review.
 func WriteNearestNeighborContactSheet(paths []string, out string, scale int) error {
+	return WriteNearestNeighborContactGrid(paths, out, len(paths), scale)
+}
+
+// WriteNearestNeighborContactGrid writes equal-size images in row-major order
+// without interpolation. Empty trailing cells remain transparent.
+func WriteNearestNeighborContactGrid(paths []string, out string, columns, scale int) error {
 	if scale < 1 {
 		return fmt.Errorf("contact sheet scale must be positive")
+	}
+	if columns < 1 {
+		return fmt.Errorf("contact grid columns must be positive")
 	}
 	images, size, err := decodeSameSize(paths)
 	if err != nil {
 		return err
 	}
-	destination := image.NewNRGBA(image.Rect(0, 0, size.X*scale*len(images), size.Y*scale))
+	rows := (len(images) + columns - 1) / columns
+	destination := image.NewNRGBA(image.Rect(0, 0, size.X*scale*columns, size.Y*scale*rows))
 	for index, source := range images {
+		column := index % columns
+		row := index / columns
 		for y := 0; y < size.Y; y++ {
 			for x := 0; x < size.X; x++ {
 				value := color.NRGBAModel.Convert(source.At(source.Bounds().Min.X+x, source.Bounds().Min.Y+y)).(color.NRGBA)
 				for dy := 0; dy < scale; dy++ {
 					for dx := 0; dx < scale; dx++ {
-						destination.SetNRGBA((index*size.X+x)*scale+dx, y*scale+dy, value)
+						destination.SetNRGBA((column*size.X+x)*scale+dx, (row*size.Y+y)*scale+dy, value)
+					}
+				}
+			}
+		}
+	}
+	return writePNG(out, destination)
+}
+
+// WriteLabeledNearestNeighborContactGrid adds explicit column and row labels
+// while preserving every source pixel at a fixed nearest-neighbor scale.
+func WriteLabeledNearestNeighborContactGrid(
+	paths []string,
+	out string,
+	columns int,
+	scale int,
+	columnLabels []string,
+	rowLabels []string,
+) error {
+	if scale < 1 {
+		return fmt.Errorf("contact sheet scale must be positive")
+	}
+	if columns < 1 {
+		return fmt.Errorf("contact grid columns must be positive")
+	}
+	images, size, err := decodeSameSize(paths)
+	if err != nil {
+		return err
+	}
+	rows := (len(images) + columns - 1) / columns
+	if len(columnLabels) != columns {
+		return fmt.Errorf("contact grid requires %d column labels", columns)
+	}
+	if len(rowLabels) != rows {
+		return fmt.Errorf("contact grid requires %d row labels", rows)
+	}
+	cellWidth, cellHeight := size.X*scale, size.Y*scale
+	destination := image.NewNRGBA(image.Rect(
+		0,
+		0,
+		labeledGridRowLabelWidth+cellWidth*columns,
+		labeledGridHeaderHeight+cellHeight*rows,
+	))
+	header := &image.Uniform{C: color.NRGBA{R: 37, G: 43, B: 54, A: 255}}
+	draw.Draw(destination, image.Rect(0, 0, destination.Bounds().Dx(), labeledGridHeaderHeight), header, image.Point{}, draw.Src)
+	draw.Draw(destination, image.Rect(0, labeledGridHeaderHeight, labeledGridRowLabelWidth, destination.Bounds().Dy()), header, image.Point{}, draw.Src)
+	for column, label := range columnLabels {
+		drawPixelLabel(destination, labeledGridRowLabelWidth+column*cellWidth+8, 9, label)
+	}
+	for row, label := range rowLabels {
+		drawPixelLabel(destination, 8, labeledGridHeaderHeight+row*cellHeight+9, label)
+	}
+	for index, source := range images {
+		column := index % columns
+		row := index / columns
+		left := labeledGridRowLabelWidth + column*cellWidth
+		top := labeledGridHeaderHeight + row*cellHeight
+		for y := 0; y < size.Y; y++ {
+			for x := 0; x < size.X; x++ {
+				value := color.NRGBAModel.Convert(source.At(source.Bounds().Min.X+x, source.Bounds().Min.Y+y)).(color.NRGBA)
+				for dy := 0; dy < scale; dy++ {
+					for dx := 0; dx < scale; dx++ {
+						destination.SetNRGBA(left+x*scale+dx, top+y*scale+dy, value)
 					}
 				}
 			}

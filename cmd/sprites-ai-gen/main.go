@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,7 +108,28 @@ func runInit(args []string) error {
 			return err
 		}
 	}
-	return nil
+	return writeStarterDirectionReference(*packDir)
+}
+
+func writeStarterDirectionReference(packDir string) error {
+	path := filepath.Join(packDir, "references", "current-right.png")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	img := image.NewNRGBA(image.Rect(0, 0, 160, 160))
+	for y := 36; y < 148; y++ {
+		for x := 52; x < 108; x++ {
+			img.SetNRGBA(x, y, color.NRGBA{R: 100, G: 80, B: 160, A: 255})
+		}
+	}
+	var data bytes.Buffer
+	if err := png.Encode(&data, img); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data.Bytes(), 0o644)
 }
 
 func runGenerate(ctx context.Context, args []string) error {
@@ -112,12 +137,28 @@ func runGenerate(ctx context.Context, args []string) error {
 	providerName := fs.String("provider", "", "real provider: openai; auto-detects from provider env when omitted")
 	fake := fs.Bool("fake", false, "use deterministic fake provider for tests and plumbing checks")
 	force := fs.Bool("force", false, "retry explicitly rejected targets")
+	allObjects := fs.Bool("all", false, "generate every object after reporting the exact provider-call count")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	p, _, all, err := loadTargetsFromCommon(common)
 	if err != nil {
 		return err
+	}
+	if *allObjects && common.object != "" {
+		return errors.New("--all cannot be combined with --object")
+	}
+	if !*allObjects && common.object == "" && !*fake {
+		return errors.New("real-provider generation requires --object <id>")
+	}
+	if err := rejectAnimatedPartialSelector(all, common.filter(), "generate"); err != nil {
+		return err
+	}
+	if *force && selectsAnimated(all, common.filter()) {
+		return errors.New("animated generation is complete-unit only in V9; rejected runs require a new --run auto run")
+	}
+	if *allObjects && selectsAnimated(all, common.filter()) {
+		return errors.New("animated generation is complete-unit only in V9; select exactly one --object")
 	}
 	env, err := generateEnvironment(common.packDir)
 	if err != nil {
@@ -128,6 +169,9 @@ func runGenerate(ctx context.Context, args []string) error {
 		return err
 	}
 	all = resolveReferencePaths(all, common.packDir)
+	if *allObjects {
+		fmt.Printf("provider_calls_planned: %d\n", plannedProviderCalls(all, common.filter()))
+	}
 	out := pack.OutputDir(p)
 	if err := output.Validate(filepath.Join(common.packDir, out)); err != nil {
 		return err
@@ -205,8 +249,18 @@ func resolveReferencePaths(all []targets.Target, packDir string) []targets.Targe
 			if inputs[inputIndex].Path != "" && !filepath.IsAbs(inputs[inputIndex].Path) {
 				inputs[inputIndex].Path = filepath.Join(packDir, inputs[inputIndex].Path)
 			}
+			if inputs[inputIndex].SourcePath != "" && !filepath.IsAbs(inputs[inputIndex].SourcePath) {
+				inputs[inputIndex].SourcePath = filepath.Join(packDir, inputs[inputIndex].SourcePath)
+			}
 		}
 		out[i].Inputs = inputs
+		variants := append([]targets.VariantSelection(nil), out[i].Variants...)
+		for variantIndex := range variants {
+			if variants[variantIndex].ReferencePath != "" && !filepath.IsAbs(variants[variantIndex].ReferencePath) {
+				variants[variantIndex].ReferencePath = filepath.Join(packDir, variants[variantIndex].ReferencePath)
+			}
+		}
+		out[i].Variants = variants
 	}
 	return out
 }
@@ -223,6 +277,9 @@ func runStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := rejectAnimatedPartialSelector(all, common.filter(), "status"); err != nil {
+		return err
+	}
 	manifest, err := generate.Load(filepath.Join(common.packDir, pack.OutputDir(p)), common.runID)
 	if err != nil {
 		return err
@@ -234,8 +291,6 @@ func runReview(args []string) error {
 	fs, common := commonFlags("review")
 	status := fs.String("status", "", "accepted or rejected")
 	reason := fs.String("reason", "", "review reason")
-	stage := fs.String("stage", "", "review intermediate stage: seed")
-	candidate := fs.String("candidate", "", "select a directional seed candidate")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -246,11 +301,11 @@ func runReview(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *candidate != "" && *stage == "" {
-		*stage = "seed"
+	if err := rejectAnimatedPartialSelector(all, common.filter(), "review"); err != nil {
+		return err
 	}
 	outputDir := filepath.Join(common.packDir, pack.OutputDir(p))
-	result, err := review.Apply(all, review.Options{OutputDir: outputDir, RunID: common.runID, Filter: common.filter(), Status: *status, Reason: *reason, Stage: *stage, Candidate: *candidate})
+	result, err := review.Apply(all, review.Options{OutputDir: outputDir, RunID: common.runID, Filter: common.filter(), Status: *status, Reason: *reason})
 	fmt.Printf("reviewed: %d\nskipped_pending: %d\n", result.Reviewed, result.SkippedPending)
 	for _, warning := range result.Warnings {
 		fmt.Printf("warning: %s\n", warning)
@@ -276,6 +331,9 @@ func runDeploy(args []string) error {
 	}
 	p, _, all, err := loadTargetsFromCommon(common)
 	if err != nil {
+		return err
+	}
+	if err := rejectAnimatedPartialSelector(all, common.filter(), "deploy"); err != nil {
 		return err
 	}
 	deployDir := p.DeployDir
@@ -386,8 +444,10 @@ func rejectRemovedFlags(args []string) error {
 	removed := map[string]string{
 		"--output":        "paths come from sprites.json",
 		"--deploy-dir":    "paths come from sprites.json",
-		"--allow-partial": "pending targets are ignored and animated rows are reviewed atomically",
+		"--allow-partial": "pending targets are ignored and animated units are reviewed atomically",
 		"--complete":      "deployment always selects complete accepted groups",
+		"--candidate":     "each attempt has exactly one candidate and candidate selection is automatic",
+		"--stage":         "V9 reviews the complete unit without an intermediate stage",
 	}
 	for _, arg := range args {
 		name := arg
@@ -399,6 +459,45 @@ func rejectRemovedFlags(args []string) error {
 		}
 	}
 	return nil
+}
+
+func rejectAnimatedPartialSelector(all []targets.Target, filter targets.Filter, command string) error {
+	if !selectsAnimated(all, filter) {
+		return nil
+	}
+	if filter.Animation != "" || filter.Frame != "" || len(filter.Variants) != 0 {
+		return fmt.Errorf("animated %s is complete-unit only in V9; select only --object", command)
+	}
+	return nil
+}
+
+func selectsAnimated(all []targets.Target, filter targets.Filter) bool {
+	for _, target := range all {
+		if target.AnimationID != "" && (filter.Object == "" || target.ObjectID == filter.Object) {
+			return true
+		}
+	}
+	return false
+}
+
+func plannedProviderCalls(all []targets.Target, filter targets.Filter) int {
+	statics := map[string]bool{}
+	animations := map[string]map[string]bool{}
+	for _, target := range targets.FilterTargets(all, filter) {
+		if target.AnimationID == "" {
+			statics[target.ID] = true
+			continue
+		}
+		if animations[target.ObjectID] == nil {
+			animations[target.ObjectID] = map[string]bool{}
+		}
+		animations[target.ObjectID][target.AnimationID] = true
+	}
+	total := len(statics)
+	for _, objectAnimations := range animations {
+		total += 1 + len(objectAnimations)
+	}
+	return total
 }
 
 func requireConcreteRunID(runID string) error {
@@ -450,20 +549,24 @@ func loadTargetsFromCommon(common *commonOptions) (*pack.Pack, string, []targets
 }
 
 const starterSpritesJSON = `{
-  "version": 1,
+  "version": 3,
   "outputDir": "output",
   "deployDir": "deploy",
   "objects": [
     {
       "id": "blood-duelist",
       "description": "Elegant demonic duelist with red coat, horned silhouette, and thin rapier.",
+      "identityLocks": [
+        "The horned silhouette, red coat, and thin rapier remain identical in every direction and frame.",
+        "The rapier remains in the same hand."
+      ],
       "size": { "width": 160, "height": 160 },
       "variants": [
         {
           "id": "direction",
           "description": "Battlefield facing direction.",
           "values": [
-            { "id": "right", "description": "Side view facing right." }
+            { "id": "right", "description": "Side view facing right.", "reference": { "path": "references/current-right.png", "description": "Current right-facing identity reference." } }
           ]
         }
       ],
