@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStatusPrintsV9UnitStagesArtifactsAndReviewAction(t *testing.T) {
+func TestStatusPrintsV10UnitStagesArtifactsAndReviewAction(t *testing.T) {
 	dir := testkit.WriteFullUnitPack(t)
 	p, all := testkit.LoadTargets(t, dir)
 	outputDir := filepath.Join(dir, p.OutputDir)

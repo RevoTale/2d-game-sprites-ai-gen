@@ -18,14 +18,14 @@ var allowedRunFiles = []*regexp.Regexp{
 	regexp.MustCompile(`^runs/[^/]+/targets/[^/]+/review/(contact-sheet\.png|animation\.gif)$`),
 	regexp.MustCompile(`^runs/[^/]+/targets/[^/]+/attempts/[^/]+/evidence\.json$`),
 	regexp.MustCompile(`^runs/[^/]+/targets/[^/]+/attempts/[^/]+/candidates/[^/]+/(raw-candidate\.png|normalized\.png|metrics\.json)$`),
-	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/character-master/(current-directional-references\.png|layout-source\.png|prompt\.md|qa\.md|normalized\.png)$`),
+	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/character-master/(canonical-profile\.json|canonical-profile-overlay\.png|current-directional-references\.png|layout-source\.png|prompt\.md|qa\.md|normalized\.png)$`),
 	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/character-master/provider/layout-source\.png$`),
 	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/character-master/provider/direction-references/[^/]+\.png$`),
 	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/character-master/recovered/[^/]+\.png$`),
 	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/character-master/review/(candidates|ownership|recovered-poses)\.png$`),
 	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/character-master/attempts/[^/]+/evidence\.json$`),
 	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/character-master/attempts/[^/]+/candidates/[^/]+/(raw-candidate\.png|normalized\.png|metrics\.json)$`),
-	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/animations/[^/]+/(layout-source\.png|master-comparison-guide\.png|prompt\.md|qa\.md|normalized\.png)$`),
+	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/animations/[^/]+/(layout-source\.png|master-comparison-guide\.png|prompt\.md|qa\.md|normalized\.png|scale-calibration\.json)$`),
 	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/animations/[^/]+/provider/layout-source\.png$`),
 	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/animations/[^/]+/recovered/[^/]+\.png$`),
 	regexp.MustCompile(`^runs/[^/]+/intermediates/[^/]+/animations/[^/]+/review/(candidates|ownership|recovered-poses)\.png$`),
@@ -92,5 +92,5 @@ func unsupportedRun(path, relative string) (bool, error) {
 	if err := json.Unmarshal(data, &header); err != nil {
 		return false, fmt.Errorf("decode run manifest %q: %w", filepath.Join(relative, "manifest.json"), err)
 	}
-	return header.Version != 9, nil
+	return header.Version != 10, nil
 }

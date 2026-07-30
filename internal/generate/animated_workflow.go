@@ -27,15 +27,16 @@ type animatedWorkflowPlan struct {
 }
 
 type animatedUnitPlan struct {
-	ID             string
-	ObjectID       string
-	MasterID       string
-	Directions     []directionPlan
-	Animations     []animationPlan
-	TargetIDs      []string
-	IdentityInputs []conditioning.Input
-	ObjectDesc     string
-	IdentityLocks  []string
+	ID               string
+	ObjectID         string
+	MasterID         string
+	Directions       []directionPlan
+	Animations       []animationPlan
+	TargetIDs        []string
+	IdentityInputs   []conditioning.Input
+	ObjectDesc       string
+	IdentityLocks    []string
+	RegistrationMode string
 }
 
 type directionPlan struct {
@@ -61,7 +62,7 @@ type animationFramePlan struct {
 func buildAnimatedPlan(all, selected []targets.Target, filter targets.Filter) (animatedWorkflowPlan, error) {
 	if filter.Animation != "" || filter.Frame != "" || len(filter.Variants) != 0 {
 		return animatedWorkflowPlan{}, errors.New(
-			"animated generation is complete-unit only in V9; start a new object run",
+			"animated generation is complete-unit only in V10; start a new object run",
 		)
 	}
 	plan := animatedWorkflowPlan{SelectedIDs: make(map[string]bool, len(selected))}
@@ -96,12 +97,13 @@ func buildAnimatedUnitPlan(all []targets.Target, objectID string) (animatedUnitP
 	}
 	first := objectTargets[0]
 	unit := animatedUnitPlan{
-		ID:             unitKind + ":" + objectID,
-		ObjectID:       objectID,
-		MasterID:       characterMasterKind + ":" + objectID,
-		ObjectDesc:     first.ObjectDesc,
-		IdentityLocks:  append([]string(nil), first.IdentityLocks...),
-		IdentityInputs: filterInputs(first.Inputs, conditioning.RoleStyle, conditioning.RoleIdentity),
+		ID:               unitKind + ":" + objectID,
+		ObjectID:         objectID,
+		MasterID:         characterMasterKind + ":" + objectID,
+		ObjectDesc:       first.ObjectDesc,
+		IdentityLocks:    append([]string(nil), first.IdentityLocks...),
+		IdentityInputs:   filterInputs(first.Inputs, conditioning.RoleStyle, conditioning.RoleIdentity),
+		RegistrationMode: first.RegistrationMode,
 	}
 	directionSeen := map[string]bool{}
 	for _, target := range objectTargets {
@@ -207,10 +209,13 @@ func validateAnimatedStart(manifest *Manifest, plan animatedWorkflowPlan, opts O
 	for _, unit := range plan.Units {
 		existing := manifest.Units[unit.ID]
 		if opts.Force {
-			return errors.New("animated generation is complete-unit only in V9; rejected runs require a new --run auto run")
+			return errors.New("animated generation is complete-unit only in V10; rejected runs require a new --run auto run")
 		}
-		if existing != nil && existing.Status == StatusRejected {
-			return fmt.Errorf("rejected animated runs are immutable in V9; start a new --run auto run for %q", unit.ObjectID)
+		if existing != nil &&
+			existing.Status == StatusRejected &&
+			(existing.AssemblyVersion >= AnimatedAssemblyVersion ||
+				existing.Review != nil) {
+			return fmt.Errorf("rejected animated runs are immutable in V10; start a new --run auto run for %q", unit.ObjectID)
 		}
 	}
 	return nil
@@ -237,7 +242,11 @@ func runAnimatedWorkflow(ctx context.Context, selected []targets.Target, plan an
 	}
 	for _, unitPlan := range plan.Units {
 		unit := manifest.Units[unitPlan.ID]
-		if unit != nil && (unit.Status == StatusAwaitingReview || unit.Status == StatusAccepted || unit.Status == StatusDeployed) {
+		if unit != nil &&
+			(unit.Status == StatusAccepted ||
+				unit.Status == StatusDeployed ||
+				unit.Status == StatusAwaitingReview &&
+					unit.AssemblyVersion >= AnimatedAssemblyVersion) {
 			result.Skipped += len(unit.TargetIDs)
 			continue
 		}

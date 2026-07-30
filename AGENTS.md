@@ -47,7 +47,8 @@
   direction references, other production frames, and neighboring animation boards remain unsent review evidence.
 - MUST never chain adjacent generated animations or frames. Invalid masters and animation boards block later calls and
   extraction instead of silently falling back to weaker conditioning.
-- MUST keep `sprites.json` provider-neutral. Provider canvas, masks, candidate handling, normalization, reviews, and
+- MUST keep `sprites.json` V4 provider-neutral. Registration mode is a visual geometry fact; provider canvas, masks,
+  candidate handling, normalization, reviews, and
   lineage remain internal generator behavior.
 - MUST generate exactly one candidate per master, animation-board, or static attempt.
   Mechanically or manually rejected animated runs are immutable and require a fresh run.
@@ -59,6 +60,8 @@
   differences are review evidence only.
 - MUST use deterministic area reduction, a locked maximum-32-color palette, linear-sRGB matching, hard alpha, and no
   dithering for pixel normalization. Catmull-Rom and free-color interpolation are forbidden for sprite candidates.
+- MUST build an animated unit's locked palette from its canonical character master only. Animation boards may add
+  motion but must not add authoritative colors.
 - MUST reject malformed candidates instead of cropping anatomy, clearing guard bands, or deleting foreground pieces.
 - MUST make animated review and deployment complete-unit atomic. Every frame must be accepted, production-eligible,
   share the current master/animation lineages, and retain its generation-start production hash before any file is
@@ -71,13 +74,22 @@
 - MUST keep the fake provider behind the explicit `--fake` CLI flag only. Do not allow fake generation through
   `--provider`, `SPRITES_AI_GEN_PROVIDER`, or provider auto-detection.
 - MUST support OpenAI as the only real provider unless the user explicitly approves another integration. Select it from
-  `--provider openai`, `SPRITES_AI_GEN_PROVIDER=openai`, or `OPENAI_API_KEY`. Validated manifest-V9 unit output is
+  `--provider openai`, `SPRITES_AI_GEN_PROVIDER=openai`, or `OPENAI_API_KEY`. Validated manifest-V10 unit output is
   production-eligible only after complete-unit visual QA and acceptance.
+- MUST request explicit `quality=high` for every OpenAI image generation and edit call. GPT Image provider settings
+  remain generator-owned and must not enter `sprites.json`.
 - MUST use deterministic semantic anchors without visible guides, panels, or masks. Current three-direction/four-frame
   boards use a 1536x1152 canvas and 384px anchor spacing; master canvases are at least 1024x1024.
-- MUST register every animated frame with one unit-wide scale, body pivot, baseline, and palette. Per-frame fitting is
-  forbidden; a complete pose that cannot fit safely rejects the unit.
-- MUST support only manifest V9 for run commands and save it atomically using temporary-file write, file sync, rename,
+- MUST derive one canonical subject profile from configured neutral direction references before animated generation.
+  The profile owns one unit scale, the actual reference canvas, and one preferred automatically measured anchor per
+  configured direction. When a pack explicitly accepts an exact smaller predecessor canvas, center it by the even
+  canvas delta without foreground scaling and reject incomplete or changed reference lineage. After all
+  poses are recovered, project that preferred anchor by the minimum distance into the shared feasible interval for the
+  direction. Every frame of a direction reuses the resulting anchor. Animation extents must never reduce the scale or
+  cause per-frame recentering.
+- MUST register every animated frame with the profile-derived scale, its direction anchor, and the shared palette.
+  Per-frame fitting is forbidden; a complete pose that cannot fit safely rejects the unit.
+- MUST support only manifest V10 for run commands and save it atomically using temporary-file write, file sync, rename,
   and directory sync.
   Older run directories stay untouched and return a clear instruction to start a new run.
 - MUST write review artifacts automatically after successful generation. `sheet` and `deploy-plan` are not CLI commands.

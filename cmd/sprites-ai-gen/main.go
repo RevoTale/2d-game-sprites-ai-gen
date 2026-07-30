@@ -155,10 +155,10 @@ func runGenerate(ctx context.Context, args []string) error {
 		return err
 	}
 	if *force && selectsAnimated(all, common.filter()) {
-		return errors.New("animated generation is complete-unit only in V9; rejected runs require a new --run auto run")
+		return errors.New("animated generation is complete-unit only in V10; rejected runs require a new --run auto run")
 	}
 	if *allObjects && selectsAnimated(all, common.filter()) {
-		return errors.New("animated generation is complete-unit only in V9; select exactly one --object")
+		return errors.New("animated generation is complete-unit only in V10; select exactly one --object")
 	}
 	env, err := generateEnvironment(common.packDir)
 	if err != nil {
@@ -447,7 +447,7 @@ func rejectRemovedFlags(args []string) error {
 		"--allow-partial": "pending targets are ignored and animated units are reviewed atomically",
 		"--complete":      "deployment always selects complete accepted groups",
 		"--candidate":     "each attempt has exactly one candidate and candidate selection is automatic",
-		"--stage":         "V9 reviews the complete unit without an intermediate stage",
+		"--stage":         "V10 reviews the complete unit without an intermediate stage",
 	}
 	for _, arg := range args {
 		name := arg
@@ -466,7 +466,7 @@ func rejectAnimatedPartialSelector(all []targets.Target, filter targets.Filter, 
 		return nil
 	}
 	if filter.Animation != "" || filter.Frame != "" || len(filter.Variants) != 0 {
-		return fmt.Errorf("animated %s is complete-unit only in V9; select only --object", command)
+		return fmt.Errorf("animated %s is complete-unit only in V10; select only --object", command)
 	}
 	return nil
 }
@@ -549,7 +549,7 @@ func loadTargetsFromCommon(common *commonOptions) (*pack.Pack, string, []targets
 }
 
 const starterSpritesJSON = `{
-  "version": 3,
+  "version": 4,
   "outputDir": "output",
   "deployDir": "deploy",
   "objects": [
@@ -560,13 +560,14 @@ const starterSpritesJSON = `{
         "The horned silhouette, red coat, and thin rapier remain identical in every direction and frame.",
         "The rapier remains in the same hand."
       ],
+      "registration": { "mode": "grounded" },
       "size": { "width": 160, "height": 160 },
       "variants": [
         {
           "id": "direction",
           "description": "Battlefield facing direction.",
           "values": [
-            { "id": "right", "description": "Side view facing right.", "reference": { "path": "references/current-right.png", "description": "Current right-facing identity reference." } }
+            { "id": "right", "description": "Side view facing right.", "reference": { "path": "references/current-right.png", "description": "Current right-facing view-geometry and registration reference; colors are not authoritative." } }
           ]
         }
       ],

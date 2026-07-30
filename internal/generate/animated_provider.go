@@ -32,6 +32,26 @@ func generateCharacterMaster(
 	for index, direction := range plan.Directions {
 		referencePaths[index] = direction.ReferencePath
 	}
+	profileMode := imageio.SubjectRegistrationMode(plan.RegistrationMode)
+	profile, err := imageio.BuildCanonicalSubjectProfile(referencePaths, profileMode)
+	if err != nil {
+		return err
+	}
+	profilePath := filepath.Join(dir, "canonical-profile.json")
+	if err := imageio.WriteCanonicalSubjectProfile(profilePath, profile); err != nil {
+		return err
+	}
+	profileOverlayPath := filepath.Join(dir, "canonical-profile-overlay.png")
+	if err := imageio.WriteCanonicalSubjectProfileOverlay(referencePaths, profileOverlayPath, profile); err != nil {
+		return err
+	}
+	unit := manifest.Units[plan.ID]
+	if unit == nil {
+		return fmt.Errorf("unit %q is missing while building canonical profile", plan.ID)
+	}
+	unit.Profile = &profile
+	unit.Artifacts.CanonicalProfilePath = profilePath
+	unit.Artifacts.CanonicalProfileOverlayPath = profileOverlayPath
 	referenceBoard := filepath.Join(dir, "current-directional-references.png")
 	if err := imageio.WriteSemanticBoard(
 		referencePaths,
@@ -63,8 +83,11 @@ func generateCharacterMaster(
 	inputs = append(inputs, plan.IdentityInputs...)
 	for index, direction := range plan.Directions {
 		inputs = append(inputs, conditioning.Input{
-			ID: pack.DirectionReferenceID(plan.ObjectID, direction.ID), Role: conditioning.RoleIdentity, Authority: "configured-direction-reference",
-			SourcePath: direction.ReferencePath, Path: providerDirectionReferences[index], Description: direction.ReferenceDescription, Required: true,
+			ID: pack.DirectionReferenceID(plan.ObjectID, direction.ID), Role: conditioning.RolePose, Authority: "configured-direction-geometry",
+			SourcePath: direction.ReferencePath, Path: providerDirectionReferences[index],
+			Description: "View geometry and registration only; legacy colors are not authoritative. " +
+				direction.ReferenceDescription,
+			Required: true,
 		})
 	}
 	state.SemanticLayout = &layout

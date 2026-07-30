@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestE2EV9InitializesGeneratesReviewsDryRunsAndDeploysUnit(t *testing.T) {
+func TestE2EV10InitializesGeneratesReviewsDryRunsAndDeploysUnit(t *testing.T) {
 	packDir := t.TempDir()
 
 	require.NoError(t, run(context.Background(), []string{"init", "--pack", packDir}))
@@ -63,7 +63,7 @@ func TestAnimatedGenerationRejectsAnimationSelector(t *testing.T) {
 		"--object", "relic-knight", "--animation", "walk",
 	})
 
-	require.ErrorContains(t, err, "complete-unit only in V9")
+	require.ErrorContains(t, err, "complete-unit only in V10")
 	require.NoFileExists(t, generate.ManifestPath(filepath.Join(dir, "output"), "run"))
 }
 
@@ -75,11 +75,11 @@ func TestAnimatedGenerationRejectsForce(t *testing.T) {
 		"--object", "relic-knight", "--force",
 	})
 
-	require.ErrorContains(t, err, "complete-unit only in V9")
+	require.ErrorContains(t, err, "complete-unit only in V10")
 	require.NoFileExists(t, generate.ManifestPath(filepath.Join(dir, "output"), "run"))
 }
 
-func TestAnimatedPartialSelectorsReturnV9MigrationErrors(t *testing.T) {
+func TestAnimatedPartialSelectorsReturnV10MigrationErrors(t *testing.T) {
 	dir := testkit.WriteFullUnitPack(t)
 	tests := [][]string{
 		{"generate", "--fake", "--pack", dir, "--run", "run", "--object", "relic-knight", "--variant", "direction=right"},
@@ -90,7 +90,7 @@ func TestAnimatedPartialSelectorsReturnV9MigrationErrors(t *testing.T) {
 	for _, args := range tests {
 		err := run(context.Background(), args)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "V9")
+		require.Contains(t, err.Error(), "V10")
 	}
 }
 

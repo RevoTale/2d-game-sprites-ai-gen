@@ -23,8 +23,9 @@ import (
 )
 
 const (
-	ManifestVersion         = 9
-	candidateQualityVersion = 13
+	ManifestVersion         = 10
+	candidateQualityVersion = 14
+	AnimatedAssemblyVersion = 6
 
 	StatusPending        = "pending"
 	StatusAwaitingReview = "awaiting_review"
@@ -45,42 +46,45 @@ type Manifest struct {
 }
 
 type UnitState struct {
-	ID                string                         `json:"id"`
-	ObjectID          string                         `json:"objectId"`
-	Status            string                         `json:"status"`
-	MasterID          string                         `json:"masterId"`
-	AnimationBoardIDs []string                       `json:"animationBoardIds"`
-	TargetIDs         []string                       `json:"targetIds"`
-	MasterLineage     string                         `json:"masterLineage,omitempty"`
-	AnimationLineages map[string]string              `json:"animationLineages,omitempty"`
-	Transform         *imageio.SemanticUnitTransform `json:"transform,omitempty"`
-	HardRejections    []string                       `json:"hardRejections,omitempty"`
-	Artifacts         ReviewArtifacts                `json:"artifacts,omitempty"`
-	Review            *ReviewRecord                  `json:"review,omitempty"`
-	Deploy            *DeployRecord                  `json:"deploy,omitempty"`
+	ID                string                           `json:"id"`
+	ObjectID          string                           `json:"objectId"`
+	Status            string                           `json:"status"`
+	MasterID          string                           `json:"masterId"`
+	AnimationBoardIDs []string                         `json:"animationBoardIds"`
+	TargetIDs         []string                         `json:"targetIds"`
+	MasterLineage     string                           `json:"masterLineage,omitempty"`
+	AnimationLineages map[string]string                `json:"animationLineages,omitempty"`
+	AssemblyVersion   int                              `json:"assemblyVersion,omitempty"`
+	Transform         *imageio.SemanticUnitTransform   `json:"transform,omitempty"`
+	Profile           *imageio.CanonicalSubjectProfile `json:"profile,omitempty"`
+	HardRejections    []string                         `json:"hardRejections,omitempty"`
+	Artifacts         ReviewArtifacts                  `json:"artifacts,omitempty"`
+	Review            *ReviewRecord                    `json:"review,omitempty"`
+	Deploy            *DeployRecord                    `json:"deploy,omitempty"`
 }
 
 // IntermediateState stores one character master or one complete animation
 // board. Neither intermediate is reviewed or deployed independently.
 type IntermediateState struct {
-	ID             string                  `json:"id"`
-	Kind           string                  `json:"kind"`
-	Status         string                  `json:"status,omitempty"`
-	ObjectID       string                  `json:"objectId"`
-	AnimationID    string                  `json:"animationId,omitempty"`
-	TargetIDs      []string                `json:"targetIds,omitempty"`
-	Dependencies   []string                `json:"dependencies,omitempty"`
-	ParentID       string                  `json:"parentId,omitempty"`
-	NormalizedPath string                  `json:"normalizedPath,omitempty"`
-	SourceSHA256   string                  `json:"sourceSha256,omitempty"`
-	Lineage        string                  `json:"lineage,omitempty"`
-	EditSourcePath string                  `json:"editSourcePath,omitempty"`
-	SemanticLayout *imageio.SemanticLayout `json:"semanticLayout,omitempty"`
-	Poses          []imageio.SemanticPose  `json:"poses,omitempty"`
-	HardRejections []string                `json:"hardRejections,omitempty"`
-	Warnings       []string                `json:"warnings,omitempty"`
-	Artifacts      ReviewArtifacts         `json:"artifacts,omitempty"`
-	Attempts       []Attempt               `json:"attempts,omitempty"`
+	ID               string                            `json:"id"`
+	Kind             string                            `json:"kind"`
+	Status           string                            `json:"status,omitempty"`
+	ObjectID         string                            `json:"objectId"`
+	AnimationID      string                            `json:"animationId,omitempty"`
+	TargetIDs        []string                          `json:"targetIds,omitempty"`
+	Dependencies     []string                          `json:"dependencies,omitempty"`
+	ParentID         string                            `json:"parentId,omitempty"`
+	NormalizedPath   string                            `json:"normalizedPath,omitempty"`
+	SourceSHA256     string                            `json:"sourceSha256,omitempty"`
+	Lineage          string                            `json:"lineage,omitempty"`
+	EditSourcePath   string                            `json:"editSourcePath,omitempty"`
+	SemanticLayout   *imageio.SemanticLayout           `json:"semanticLayout,omitempty"`
+	Poses            []imageio.SemanticPose            `json:"poses,omitempty"`
+	ScaleCalibration *imageio.SemanticScaleCalibration `json:"scaleCalibration,omitempty"`
+	HardRejections   []string                          `json:"hardRejections,omitempty"`
+	Warnings         []string                          `json:"warnings,omitempty"`
+	Artifacts        ReviewArtifacts                   `json:"artifacts,omitempty"`
+	Attempts         []Attempt                         `json:"attempts,omitempty"`
 }
 
 type TargetState struct {
@@ -124,23 +128,26 @@ type NormalizationRecord struct {
 }
 
 type ReviewArtifacts struct {
-	PromptPath                string   `json:"promptPath,omitempty"`
-	EvidencePath              string   `json:"evidencePath,omitempty"`
-	QAPath                    string   `json:"qaPath,omitempty"`
-	CurrentReferenceSheetPath string   `json:"currentReferenceSheetPath,omitempty"`
-	MasterSheetPath           string   `json:"masterSheetPath,omitempty"`
-	CompleteUnitSheetPath     string   `json:"completeUnitSheetPath,omitempty"`
-	CandidateSheetPath        string   `json:"candidateSheetPath,omitempty"`
-	BoardMetricsPath          string   `json:"boardMetricsPath,omitempty"`
-	IdentityComparisonPath    string   `json:"identityComparisonPath,omitempty"`
-	OwnershipOverlayPath      string   `json:"ownershipOverlayPath,omitempty"`
-	RecoveredPosePaths        []string `json:"recoveredPosePaths,omitempty"`
-	RecoveredPoseSheetPath    string   `json:"recoveredPoseSheetPath,omitempty"`
-	ContactSheetPath          string   `json:"contactSheetPath,omitempty"`
-	AnimationGIFPath          string   `json:"animationGifPath,omitempty"`
-	AnimationBoardPaths       []string `json:"animationBoardPaths,omitempty"`
-	AnimationGIFPaths         []string `json:"animationGifPaths,omitempty"`
-	FramePaths                []string `json:"framePaths,omitempty"`
+	PromptPath                  string   `json:"promptPath,omitempty"`
+	EvidencePath                string   `json:"evidencePath,omitempty"`
+	QAPath                      string   `json:"qaPath,omitempty"`
+	CurrentReferenceSheetPath   string   `json:"currentReferenceSheetPath,omitempty"`
+	CanonicalProfilePath        string   `json:"canonicalProfilePath,omitempty"`
+	CanonicalProfileOverlayPath string   `json:"canonicalProfileOverlayPath,omitempty"`
+	ScaleCalibrationPath        string   `json:"scaleCalibrationPath,omitempty"`
+	MasterSheetPath             string   `json:"masterSheetPath,omitempty"`
+	CompleteUnitSheetPath       string   `json:"completeUnitSheetPath,omitempty"`
+	CandidateSheetPath          string   `json:"candidateSheetPath,omitempty"`
+	BoardMetricsPath            string   `json:"boardMetricsPath,omitempty"`
+	IdentityComparisonPath      string   `json:"identityComparisonPath,omitempty"`
+	OwnershipOverlayPath        string   `json:"ownershipOverlayPath,omitempty"`
+	RecoveredPosePaths          []string `json:"recoveredPosePaths,omitempty"`
+	RecoveredPoseSheetPath      string   `json:"recoveredPoseSheetPath,omitempty"`
+	ContactSheetPath            string   `json:"contactSheetPath,omitempty"`
+	AnimationGIFPath            string   `json:"animationGifPath,omitempty"`
+	AnimationBoardPaths         []string `json:"animationBoardPaths,omitempty"`
+	AnimationGIFPaths           []string `json:"animationGifPaths,omitempty"`
+	FramePaths                  []string `json:"framePaths,omitempty"`
 }
 
 type Attempt struct {

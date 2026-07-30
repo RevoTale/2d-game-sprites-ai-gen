@@ -130,12 +130,13 @@ func TestExpandPreservesFrameArrayOrderWhenExplicitFrameIDsSortDifferently(t *te
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 3,
+  "version": 4,
   "objects": [
     {
       "id": "duelist",
       "description": "A duelist.",
       "identityLocks": ["The same duelist appears in every frame."],
+      "registration": {"mode":"grounded"},
       "size": { "width": 16, "height": 16 },
       "variants": [{
         "id": "direction",

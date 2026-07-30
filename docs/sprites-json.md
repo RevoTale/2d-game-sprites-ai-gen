@@ -1,8 +1,8 @@
-# `sprites.json` V3
+# `sprites.json` V4
 
-V3 is provider-neutral. It stores character appearance, proportions,
+V4 is provider-neutral. It stores character appearance, proportions,
 equipment, directions, animation/frame intent, source evidence, sizes, and
-deployment templates. It does not store provider prompts, canvas, chroma,
+one generic registration mode. It does not store provider prompts, canvas, chroma,
 semantic anchors, masks, pose recovery, model settings, sequencing,
 normalization, review, threshold, candidate, attempt, lineage, or run state.
 
@@ -18,12 +18,13 @@ has one required reference:
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "objects": [{
     "id": "relic-knight",
     "description": "Heavy blue-and-gold knight.",
     "identityLocks": ["The swept gold helmet crest remains unchanged."],
-    "size": {"width": 160, "height": 160},
+    "registration": {"mode": "grounded"},
+    "size": {"width": 384, "height": 384},
     "variants": [{
       "id": "direction",
       "description": "Authored battlefield direction.",
@@ -32,7 +33,7 @@ has one required reference:
         "description": "Right-facing side view.",
         "reference": {
           "path": "../source/frames/units/relic-knight/walk/right/00.png",
-          "description": "Current right-facing identity reference."
+          "description": "Current right-facing view-geometry and registration reference; colors are not authoritative."
         }
       }]
     }],
@@ -45,9 +46,20 @@ has one required reference:
 }
 ```
 
-Direction references are pack-relative PNGs, must exist, and must match the
-object frame size. Their evidence IDs are derived from object and direction.
-Additional animated variant axes are unsupported. Static objects and generic
-style/identity references retain their existing shape.
+Direction references are pack-relative PNGs and must exist. Normally they match
+the object frame size. During an explicit canvas migration, the generator may
+also accept the exact predecessor canvas when both axes are 64 pixels smaller;
+it centers that reference with equal transparent padding without resampling its
+foreground. No arbitrary smaller reference is valid. Canonical profiles record
+the actual reference canvas so target-space anchors receive the same centering
+translation. Their evidence IDs are derived from object and direction.
+The generator sends them with the pose/view-geometry role; their descriptions
+must not claim appearance or color authority. Additional animated variant axes
+are unsupported. Static objects and generic style/identity references retain
+their existing shape.
 
-V1 and V2 packs fail with a V3 migration message.
+Registration modes are `grounded`, `centered`, and `canvas`. They do not carry
+manual boxes, coordinates, action envelopes, scale numbers, or thresholds.
+Animated objects require `grounded` or `centered`; opaque tiles use `canvas`.
+
+V1 through V3 packs fail with a V4 migration message.

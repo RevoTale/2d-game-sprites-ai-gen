@@ -12,20 +12,47 @@ import (
 )
 
 func TestDecodeRejectsUnknownFields(t *testing.T) {
-	_, err := pack.Decode(strings.NewReader(`{"version":3,"objects":[],"type":"animated"}`))
+	_, err := pack.Decode(strings.NewReader(`{"version":4,"objects":[],"type":"animated"}`))
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown field")
 }
 
-func TestValidateRejectsV2WithMigrationMessage(t *testing.T) {
+func TestValidateRejectsV3WithMigrationMessage(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{"version":2,"objects":[]}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{"version":3,"objects":[]}`), 0o644))
 
 	_, _, err := pack.Load(dir)
 
-	require.ErrorContains(t, err, "sprites.json v2 is unsupported; migrate the pack to v3")
+	require.ErrorContains(t, err, "sprites.json v3 is unsupported; migrate the pack to v4")
+}
+
+func TestValidateRequiresRegistrationModeForAnimatedObjects(t *testing.T) {
+	dir := testkit.WritePack(t)
+	path := filepath.Join(dir, "sprites.json")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	data = []byte(strings.Replace(string(data), `
+      "registration": {"mode":"grounded"},`, ``, 1))
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	_, _, err = pack.Load(dir)
+
+	require.ErrorContains(t, err, `animated object "blood-duelist" registration mode is required`)
+}
+
+func TestValidateRejectsCanvasRegistrationForAnimatedObjects(t *testing.T) {
+	dir := testkit.WritePack(t)
+	path := filepath.Join(dir, "sprites.json")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	data = []byte(strings.Replace(string(data), `"mode":"grounded"`, `"mode":"canvas"`, 1))
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	_, _, err = pack.Load(dir)
+
+	require.ErrorContains(t, err, `animated object "blood-duelist" registration mode "canvas" is unsupported`)
 }
 
 func TestValidateRejectsReferenceWithoutIDOrRole(t *testing.T) {
@@ -90,7 +117,7 @@ func TestValidateRequiresOneSizedReferencePerAnimatedDirection(t *testing.T) {
 	}{
 		{
 			name:    "missing",
-			replace: `, "reference": {"path":"direction-right.png","description":"Current right-facing identity reference."}`,
+			replace: `, "reference": {"path":"direction-right.png","description":"Current right-facing view-geometry and registration reference; colors are not authoritative."}`,
 			want:    `direction "right" reference is required`,
 		},
 		{
@@ -121,6 +148,30 @@ func TestValidateRequiresOneSizedReferencePerAnimatedDirection(t *testing.T) {
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
+}
+
+func TestValidateAllowsCenteredLegacyReferenceCanvasDuringAnimatedCanvasMigration(t *testing.T) {
+	dir := testkit.WriteFullUnitPack(t)
+
+	p, _, err := pack.Load(dir)
+
+	require.NoError(t, err)
+	require.Equal(t, pack.Size{Width: 384, Height: 384}, p.Objects[0].Size)
+}
+
+func TestValidateRejectsArbitrarySmallerAnimatedReferenceCanvas(t *testing.T) {
+	dir := testkit.WriteFullUnitPack(t)
+	path := filepath.Join(
+		dir,
+		"deploy",
+		"units",
+		"relic-knight__walk__down__00.png",
+	)
+	require.NoError(t, os.WriteFile(path, testkit.PNGWithMargin(t, 256, 256, 40), 0o644))
+
+	_, _, err := pack.Load(dir)
+
+	require.ErrorContains(t, err, "expected 384x384 or centered legacy 320x320")
 }
 
 func TestValidateAcceptsDirectionReferencesWithinSiblingDeployDir(t *testing.T) {
@@ -268,7 +319,7 @@ func TestValidateRejectsUnknownDeployTemplatePlaceholders(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 3,
+  "version": 4,
   "objects": [
     {
       "id": "duelist",
@@ -289,7 +340,7 @@ func TestLoadAcceptsStaticObjectWithoutExplicitDeployTemplate(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 3,
+  "version": 4,
   "objects": [
     {
       "id": "grass",
@@ -309,7 +360,7 @@ func TestLoadAcceptsStaticVariantObjectWithoutExplicitDeployTemplate(t *testing.
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 3,
+  "version": 4,
   "objects": [
     {
       "id": "grass",

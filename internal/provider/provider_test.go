@@ -31,10 +31,12 @@ func TestOpenAIUsesSquareProviderCanvasForSmallTargetSprites(t *testing.T) {
 		var payload struct {
 			Size       string `json:"size"`
 			Background string `json:"background"`
+			Quality    string `json:"quality"`
 		}
 		require.NoError(t, json.Unmarshal(body, &payload))
 		require.Equal(t, "1120x1120", payload.Size)
 		require.Equal(t, "opaque", payload.Background)
+		require.Equal(t, "high", payload.Quality)
 		return openAIImageResponse(t, 1120, 1120), nil
 	})
 	openAI := provider.OpenAI{
@@ -49,6 +51,7 @@ func TestOpenAIUsesSquareProviderCanvasForSmallTargetSprites(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "1120x1120", result.Metadata["providerSize"])
+	require.Equal(t, "high", result.Metadata["quality"])
 	require.NotEmpty(t, result.PNG)
 }
 
@@ -113,6 +116,7 @@ func TestOpenAIUsesEditsEndpointWhenReferencesArePresent(t *testing.T) {
 		require.Equal(t, []string{"1120x1120"}, form.Value["size"])
 		require.Equal(t, []string{"png"}, form.Value["output_format"])
 		require.Equal(t, []string{"opaque"}, form.Value["background"])
+		require.Equal(t, []string{"high"}, form.Value["quality"])
 		require.Len(t, form.File["image[]"], 3)
 		require.Equal(t, "identity.png", form.File["image[]"][0].Filename)
 		require.Equal(t, "pose.png", form.File["image[]"][1].Filename)
@@ -141,6 +145,7 @@ func TestOpenAIUsesEditsEndpointWhenReferencesArePresent(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "edits", result.Metadata["endpoint"])
+	require.Equal(t, "high", result.Metadata["quality"])
 	require.NotEmpty(t, result.PNG)
 }
 

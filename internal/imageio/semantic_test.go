@@ -3,6 +3,7 @@ package imageio
 import (
 	"image"
 	"image/color"
+	"image/draw"
 	"path/filepath"
 	"testing"
 
@@ -140,7 +141,7 @@ func TestRecoverSemanticPosesKeepsBodyPivotStableWithWideConnectedWeapon(t *test
 	require.Equal(t, 610, poses[0].Pivot.Y)
 }
 
-func TestSemanticUnitRegistrationUsesOneScaleAndStableBodyPivot(t *testing.T) {
+func TestCanonicalUnitRegistrationUsesOneScaleAndStableBodyPivot(t *testing.T) {
 	layout := twoPoseSemanticLayout(t)
 	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
 	fillOpaque(board, image.Rect(280, 400, 345, 600), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
@@ -153,40 +154,400 @@ func TestSemanticUnitRegistrationUsesOneScaleAndStableBodyPivot(t *testing.T) {
 	poses, err := RecoverSemanticPoses(boardPath, layout, posePaths)
 	require.NoError(t, err)
 
-	transform, err := FitSemanticUnitTransform(poses, 160, 160)
+	referencePaths := []string{filepath.Join(dir, "reference-0.png"), filepath.Join(dir, "reference-1.png")}
+	for index := range posePaths {
+		writePaddedReference(t, posePaths[index], referencePaths[index])
+	}
+	profile, err := BuildCanonicalSubjectProfile(referencePaths, SubjectRegistrationGrounded)
+	require.NoError(t, err)
+	transform, err := FitCanonicalSubjectTransform(profile, posePaths, poses, 320, 320)
 	require.NoError(t, err)
 	outputs := []string{filepath.Join(dir, "frame-0.png"), filepath.Join(dir, "frame-1.png")}
-	evidence, err := WriteRegisteredSemanticPoses(posePaths, poses, outputs, 160, 160, nil, transform)
+	evidence, err := WriteRegisteredSemanticPoses(
+		posePaths,
+		poses,
+		outputs,
+		320,
+		320,
+		nil,
+		transform,
+		1,
+	)
 
 	require.NoError(t, err)
 	require.Len(t, evidence, 2)
 	require.Equal(t, evidence[0].Scale, evidence[1].Scale)
-	require.Equal(t, evidence[0].CenterX, evidence[1].CenterX)
-	require.Equal(t, evidence[0].Baseline, evidence[1].Baseline)
+	require.Equal(t, profile.ReferencePivots[0], transform.DirectionAnchors[0])
+	require.Equal(t, profile.ReferencePivots[1], transform.DirectionAnchors[1])
 	require.FileExists(t, outputs[0])
 	require.FileExists(t, outputs[1])
 }
 
-func TestSemanticUnitRegistrationFitsCompleteEnvelopeWithOneScale(t *testing.T) {
-	poses := []SemanticPose{
+func TestCanonicalRegistrationCentersLegacyReferenceCanvasWithoutChangingBodyScale(t *testing.T) {
+	dir := t.TempDir()
+	referencePath := filepath.Join(dir, "reference.png")
+	reference := image.NewNRGBA(image.Rect(0, 0, 320, 320))
+	fillOpaque(
+		reference,
+		image.Rect(80, 40, 180, 240),
+		color.NRGBA{R: 30, G: 80, B: 180, A: 255},
+	)
+	require.NoError(t, writePNG(referencePath, reference))
+	masterPath := filepath.Join(dir, "master.png")
+	master := image.NewNRGBA(image.Rect(0, 0, 100, 200))
+	fillOpaque(master, master.Bounds(), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	require.NoError(t, writePNG(masterPath, master))
+	pose := SemanticPose{
+		Bounds:     master.Bounds(),
+		CoreBounds: master.Bounds(),
+		Pivot:      image.Pt(50, 200),
+	}
+	profile, err := BuildCanonicalSubjectProfile(
+		[]string{referencePath},
+		SubjectRegistrationGrounded,
+	)
+	require.NoError(t, err)
+
+	transform, err := FitCanonicalSubjectTransform(
+		profile,
+		[]string{masterPath},
+		[]SemanticPose{pose},
+		384,
+		384,
+	)
+
+	require.NoError(t, err)
+	require.InDelta(t, 1, transform.Scale, 0.01)
+	require.Equal(
+		t,
+		profile.ReferencePivots[0].Add(image.Pt(32, 32)),
+		transform.DirectionAnchors[0],
+	)
+}
+
+func TestCanonicalRegistrationDoesNotShrinkBodyScaleForWideActionExtent(t *testing.T) {
+	dir := t.TempDir()
+	referencePaths := []string{
+		filepath.Join(dir, "reference-down.png"),
+		filepath.Join(dir, "reference-up.png"),
+	}
+	masterPaths := []string{
+		filepath.Join(dir, "master-down.png"),
+		filepath.Join(dir, "master-up.png"),
+	}
+	for _, path := range referencePaths {
+		sprite := image.NewNRGBA(image.Rect(0, 0, 320, 320))
+		fillOpaque(sprite, image.Rect(120, 60, 200, 260), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+		require.NoError(t, writePNG(path, sprite))
+	}
+	for _, path := range masterPaths {
+		sprite := image.NewNRGBA(image.Rect(0, 0, 120, 200))
+		fillOpaque(sprite, image.Rect(20, 0, 100, 200), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+		require.NoError(t, writePNG(path, sprite))
+	}
+	profile, err := BuildCanonicalSubjectProfile(referencePaths, SubjectRegistrationGrounded)
+	require.NoError(t, err)
+	masterPoses := []SemanticPose{
 		{
 			Index: 0, Bounds: image.Rect(0, 0, 120, 200),
 			CoreBounds: image.Rect(20, 0, 100, 200), Pivot: image.Pt(60, 200),
 		},
 		{
-			Index: 1, Bounds: image.Rect(-300, 0, 400, 200),
+			Index: 1, Bounds: image.Rect(0, 0, 120, 200),
 			CoreBounds: image.Rect(20, 0, 100, 200), Pivot: image.Pt(60, 200),
 		},
 	}
 
-	transform, err := FitSemanticUnitTransform(poses, 160, 160)
+	transform, err := FitCanonicalSubjectTransform(profile, masterPaths, masterPoses, 320, 320)
 
 	require.NoError(t, err)
-	require.Less(t, transform.Scale, 0.5)
-	safe := image.Rect(0, 0, 160, 160).Inset(CanonicalFrameEdgePadding(160, 160))
-	for _, pose := range poses {
-		require.True(t, semanticPoseDestination(pose, transform).In(safe))
+	require.InDelta(t, 1, transform.Scale, 0.01)
+	wideAction := SemanticPose{
+		Index: 2, Bounds: image.Rect(-300, 0, 400, 200),
+		CoreBounds: image.Rect(20, 0, 100, 200), Pivot: image.Pt(60, 200),
 	}
+	safe := image.Rect(0, 0, 320, 320).Inset(CanonicalFrameEdgePadding(320, 320))
+	require.False(t, semanticPoseDestination(
+		wideAction,
+		transform.Scale,
+		transform.DirectionAnchors[0],
+	).In(safe))
+}
+
+func TestCanonicalTransformAllowsFeasiblePreferredAnchorTranslation(t *testing.T) {
+	dir := t.TempDir()
+	referencePath := filepath.Join(dir, "reference.png")
+	reference := image.NewNRGBA(image.Rect(0, 0, 320, 320))
+	fillOpaque(
+		reference,
+		image.Rect(10, 60, 90, 260),
+		color.NRGBA{R: 30, G: 80, B: 180, A: 255},
+	)
+	require.NoError(t, writePNG(referencePath, reference))
+	masterPath := filepath.Join(dir, "master.png")
+	master := image.NewNRGBA(image.Rect(0, 0, 200, 200))
+	fillOpaque(
+		master,
+		master.Bounds(),
+		color.NRGBA{R: 30, G: 80, B: 180, A: 255},
+	)
+	require.NoError(t, writePNG(masterPath, master))
+	profile, err := BuildCanonicalSubjectProfile(
+		[]string{referencePath},
+		SubjectRegistrationGrounded,
+	)
+	require.NoError(t, err)
+	pose := SemanticPose{
+		Bounds: master.Bounds(),
+		Pivot:  image.Pt(100, 200),
+	}
+
+	transform, err := FitCanonicalSubjectTransform(
+		profile,
+		[]string{masterPath},
+		[]SemanticPose{pose},
+		320,
+		320,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, profile.ReferencePivots[0], transform.DirectionAnchors[0])
+	preferredDestination := semanticPoseDestination(
+		pose,
+		transform.Scale,
+		transform.DirectionAnchors[0],
+	)
+	safe := image.Rect(0, 0, 320, 320).Inset(CanonicalFrameEdgePadding(320, 320))
+	require.False(t, preferredDestination.In(safe))
+	adjusted, err := ConstrainSemanticUnitAnchors(
+		transform,
+		[][]SemanticPose{{pose}},
+		320,
+		320,
+	)
+	require.NoError(t, err)
+	require.True(t, semanticPoseDestination(
+		pose,
+		adjusted.Scale,
+		adjusted.DirectionAnchors[0],
+	).In(safe))
+}
+
+func TestConstrainSemanticUnitAnchorsUsesOneMinimalShiftPerDirection(t *testing.T) {
+	transform := SemanticUnitTransform{
+		Scale:            1,
+		DirectionAnchors: []image.Point{{X: 150, Y: 280}},
+	}
+	neutral := SemanticPose{
+		Bounds: image.Rect(-60, -200, 80, 0),
+		Pivot:  image.Point{},
+	}
+	wideAttack := SemanticPose{
+		Bounds: image.Rect(-80, -200, 220, 0),
+		Pivot:  image.Point{},
+	}
+
+	adjusted, err := ConstrainSemanticUnitAnchors(
+		transform,
+		[][]SemanticPose{{neutral, wideAttack}},
+		320,
+		320,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, transform.Scale, adjusted.Scale)
+	require.Equal(t, image.Pt(99, 280), adjusted.DirectionAnchors[0])
+	safe := image.Rect(0, 0, 320, 320).Inset(CanonicalFrameEdgePadding(320, 320))
+	require.True(t, semanticPoseDestination(
+		neutral,
+		adjusted.Scale,
+		adjusted.DirectionAnchors[0],
+	).In(safe))
+	require.True(t, semanticPoseDestination(
+		wideAttack,
+		adjusted.Scale,
+		adjusted.DirectionAnchors[0],
+	).In(safe))
+}
+
+func TestConstrainSemanticUnitAnchorsRejectsEmptyFeasibleInterval(t *testing.T) {
+	transform := SemanticUnitTransform{
+		Scale:            1,
+		DirectionAnchors: []image.Point{{X: 150, Y: 280}},
+	}
+	rightHeavy := SemanticPose{
+		Bounds: image.Rect(-10, -200, 270, 0),
+		Pivot:  image.Point{},
+	}
+	leftHeavy := SemanticPose{
+		Bounds: image.Rect(-120, -200, 180, 0),
+		Pivot:  image.Point{},
+	}
+
+	_, err := ConstrainSemanticUnitAnchors(
+		transform,
+		[][]SemanticPose{{rightHeavy, leftHeavy}},
+		320,
+		320,
+	)
+
+	require.ErrorIs(t, err, ErrProductionFrameClipping)
+	require.ErrorContains(t, err, "direction 00 has no shared feasible anchor")
+}
+
+func TestCalibrateSemanticPoseSetCancelsIndependentBoardScale(t *testing.T) {
+	dir := t.TempDir()
+	masterPaths := []string{
+		filepath.Join(dir, "master-down.png"),
+		filepath.Join(dir, "master-up.png"),
+	}
+	calibrationPaths := []string{
+		filepath.Join(dir, "walk-down-00.png"),
+		filepath.Join(dir, "walk-up-00.png"),
+	}
+	writeOpaqueRectPNG(t, masterPaths[0], image.Rect(0, 0, 100, 200))
+	writeOpaqueRectPNG(t, masterPaths[1], image.Rect(0, 0, 120, 180))
+	writeOpaqueRectPNG(t, calibrationPaths[0], image.Rect(0, 0, 50, 100))
+	writeOpaqueRectPNG(t, calibrationPaths[1], image.Rect(0, 0, 60, 90))
+
+	calibration, err := CalibrateSemanticPoseSet(
+		masterPaths,
+		calibrationPaths,
+		SubjectRegistrationGrounded,
+		0.7,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, SemanticScaleCalibrationVersion, calibration.Version)
+	require.Equal(t, 0, calibration.CalibrationFrame)
+	require.Equal(t, []float64{2, 2}, calibration.SourceRatios)
+	require.InDelta(t, 1.4, calibration.DirectionScales[0], 0.0001)
+	require.InDelta(t, 1.4, calibration.DirectionScales[1], 0.0001)
+}
+
+func TestConstrainSemanticUnitAnchorsAcrossPoseSetsUsesCalibratedScales(t *testing.T) {
+	transform := SemanticUnitTransform{
+		Scale:            0.5,
+		DirectionAnchors: []image.Point{{X: 160, Y: 280}},
+	}
+	master := SemanticPose{
+		Bounds: image.Rect(-100, -400, 100, 0),
+		Pivot:  image.Point{},
+	}
+	smallBoardNeutral := SemanticPose{
+		Bounds: image.Rect(-50, -200, 50, 0),
+		Pivot:  image.Point{},
+	}
+	smallBoardAttack := SemanticPose{
+		Bounds: image.Rect(-120, -200, 80, 0),
+		Pivot:  image.Point{},
+	}
+
+	adjusted, err := ConstrainSemanticUnitAnchorsAcrossPoseSets(
+		transform,
+		[]SemanticPoseSet{
+			{
+				PosesByDirection: [][]SemanticPose{{master}},
+				DirectionScales:  []float64{0.5},
+			},
+			{
+				PosesByDirection: [][]SemanticPose{{smallBoardNeutral, smallBoardAttack}},
+				DirectionScales:  []float64{1},
+			},
+		},
+		320,
+		320,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, transform.Scale, adjusted.Scale)
+	require.Equal(t, image.Pt(160, 280), adjusted.DirectionAnchors[0])
+}
+
+func TestConstrainSemanticUnitAnchorsAcrossPoseSetsRejectsCanonicalWideAction(t *testing.T) {
+	transform := SemanticUnitTransform{
+		Scale:            0.5,
+		DirectionAnchors: []image.Point{{X: 160, Y: 280}},
+	}
+	master := SemanticPose{
+		Bounds: image.Rect(-100, -400, 100, 0),
+		Pivot:  image.Point{},
+	}
+	leftHeavy := SemanticPose{
+		Bounds: image.Rect(-180, -200, 120, 0),
+		Pivot:  image.Point{},
+	}
+	rightHeavy := SemanticPose{
+		Bounds: image.Rect(-120, -200, 180, 0),
+		Pivot:  image.Point{},
+	}
+
+	_, err := ConstrainSemanticUnitAnchorsAcrossPoseSets(
+		transform,
+		[]SemanticPoseSet{
+			{
+				PosesByDirection: [][]SemanticPose{{master}},
+				DirectionScales:  []float64{0.5},
+			},
+			{
+				PosesByDirection: [][]SemanticPose{{leftHeavy, rightHeavy}},
+				DirectionScales:  []float64{1},
+			},
+		},
+		320,
+		320,
+	)
+
+	require.ErrorIs(t, err, ErrProductionFrameClipping)
+	require.ErrorContains(t, err, "direction 00 has no shared feasible anchor")
+}
+
+func TestCenteredCanonicalRegistrationPreservesReferenceVisualCenter(t *testing.T) {
+	dir := t.TempDir()
+	referencePath := filepath.Join(dir, "reference.png")
+	reference := image.NewNRGBA(image.Rect(0, 0, 320, 320))
+	fillOpaque(
+		reference,
+		image.Rect(80, 40, 180, 240),
+		color.NRGBA{R: 30, G: 80, B: 180, A: 255},
+	)
+	require.NoError(t, writePNG(referencePath, reference))
+	masterPath := filepath.Join(dir, "master.png")
+	master := image.NewNRGBA(image.Rect(0, 0, 100, 200))
+	fillOpaque(
+		master,
+		master.Bounds(),
+		color.NRGBA{R: 30, G: 80, B: 180, A: 255},
+	)
+	require.NoError(t, writePNG(masterPath, master))
+	pose := SemanticPose{
+		Bounds:     master.Bounds(),
+		CoreBounds: master.Bounds(),
+		Pivot:      image.Pt(50, 200),
+	}
+	profile, err := BuildCanonicalSubjectProfile(
+		[]string{referencePath},
+		SubjectRegistrationCentered,
+	)
+	require.NoError(t, err)
+
+	transform, err := FitCanonicalSubjectTransform(
+		profile,
+		[]string{masterPath},
+		[]SemanticPose{pose},
+		320,
+		320,
+	)
+
+	require.NoError(t, err)
+	require.InDelta(t, 1, transform.Scale, 0.01)
+	destination := semanticPoseDestination(
+		pose,
+		transform.Scale,
+		transform.DirectionAnchors[0],
+	)
+	require.Equal(t, profile.ReferencePivots[0].X, (destination.Min.X+destination.Max.X)/2)
+	require.Equal(t, profile.ReferencePivots[0].Y, (destination.Min.Y+destination.Max.Y)/2)
 }
 
 func twoPoseSemanticLayout(t *testing.T) SemanticLayout {
@@ -202,4 +563,21 @@ func fillOpaque(img *image.NRGBA, bounds image.Rectangle, value color.NRGBA) {
 			img.SetNRGBA(x, y, value)
 		}
 	}
+}
+
+func writePaddedReference(t *testing.T, posePath, outputPath string) {
+	t.Helper()
+	pose, err := decodeNRGBA(posePath)
+	require.NoError(t, err)
+	output := image.NewNRGBA(image.Rect(0, 0, 320, 320))
+	offset := image.Pt((320-pose.Bounds().Dx())/2, 280-pose.Bounds().Dy())
+	draw.Draw(output, pose.Bounds().Add(offset), pose, pose.Bounds().Min, draw.Src)
+	require.NoError(t, writePNG(outputPath, output))
+}
+
+func writeOpaqueRectPNG(t *testing.T, path string, bounds image.Rectangle) {
+	t.Helper()
+	sprite := image.NewNRGBA(bounds)
+	fillOpaque(sprite, bounds, color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	require.NoError(t, writePNG(path, sprite))
 }

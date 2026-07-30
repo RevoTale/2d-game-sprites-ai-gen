@@ -19,6 +19,9 @@ const (
 	DefaultAnimatedDeployTemplate = "units/{object}__{animation}__{variant.direction}__{frame}.png"
 	RenderModeIsolated            = "isolated"
 	RenderModeOpaqueTile          = "opaque-tile"
+	RegistrationModeGrounded      = "grounded"
+	RegistrationModeCentered      = "centered"
+	RegistrationModeCanvas        = "canvas"
 )
 
 var (
@@ -43,15 +46,22 @@ type Reference struct {
 }
 
 type Object struct {
-	ID            string      `json:"id"`
-	Description   string      `json:"description"`
-	IdentityLocks []string    `json:"identityLocks,omitempty"`
-	RenderMode    string      `json:"renderMode,omitempty"`
-	Size          Size        `json:"size"`
-	References    []Reference `json:"references,omitempty"`
-	Variants      []Variant   `json:"variants,omitempty"`
-	Animations    []Animation `json:"animations,omitempty"`
-	Deploy        Deploy      `json:"deploy,omitempty"`
+	ID            string       `json:"id"`
+	Description   string       `json:"description"`
+	IdentityLocks []string     `json:"identityLocks,omitempty"`
+	RenderMode    string       `json:"renderMode,omitempty"`
+	Registration  Registration `json:"registration,omitempty"`
+	Size          Size         `json:"size"`
+	References    []Reference  `json:"references,omitempty"`
+	Variants      []Variant    `json:"variants,omitempty"`
+	Animations    []Animation  `json:"animations,omitempty"`
+	Deploy        Deploy       `json:"deploy,omitempty"`
+}
+
+// Registration selects how deterministic normalization anchors an isolated
+// subject. It deliberately carries no provider or pixel-coordinate policy.
+type Registration struct {
+	Mode string `json:"mode,omitempty"`
 }
 
 type Size struct {
@@ -129,11 +139,11 @@ func Decode(r io.Reader) (*Pack, error) {
 }
 
 func Validate(dir string, p *Pack) error {
-	if p.Version == 1 || p.Version == 2 {
-		return fmt.Errorf("sprites.json v%d is unsupported; migrate the pack to v3", p.Version)
+	if p.Version >= 1 && p.Version <= 3 {
+		return fmt.Errorf("sprites.json v%d is unsupported; migrate the pack to v4", p.Version)
 	}
-	if p.Version != 3 {
-		return fmt.Errorf("sprites.json v%d is unsupported; expected v3", p.Version)
+	if p.Version != 4 {
+		return fmt.Errorf("sprites.json v%d is unsupported; expected v4", p.Version)
 	}
 	if len(p.Objects) == 0 {
 		return errors.New("objects must contain at least one object")
@@ -158,6 +168,9 @@ func Validate(dir string, p *Pack) error {
 			return fmt.Errorf("object %q size must be positive", obj.ID)
 		}
 		if err := validateRenderMode(obj); err != nil {
+			return err
+		}
+		if err := validateRegistration(obj); err != nil {
 			return err
 		}
 		if len(obj.Animations) != 0 {
@@ -187,6 +200,62 @@ func Validate(dir string, p *Pack) error {
 		}
 	}
 	return nil
+}
+
+func validateRegistration(obj Object) error {
+	mode := obj.Registration.Mode
+	if len(obj.Animations) != 0 {
+		if mode == "" {
+			return fmt.Errorf("animated object %q registration mode is required", obj.ID)
+		}
+		if mode != RegistrationModeGrounded && mode != RegistrationModeCentered {
+			return fmt.Errorf(
+				"animated object %q registration mode %q is unsupported; expected %q or %q",
+				obj.ID,
+				mode,
+				RegistrationModeGrounded,
+				RegistrationModeCentered,
+			)
+		}
+		return nil
+	}
+	if EffectiveRenderMode(obj) == RenderModeOpaqueTile {
+		if mode != "" && mode != RegistrationModeCanvas {
+			return fmt.Errorf(
+				"opaque-tile object %q registration mode %q is unsupported; expected %q",
+				obj.ID,
+				mode,
+				RegistrationModeCanvas,
+			)
+		}
+		return nil
+	}
+	if mode != "" && mode != RegistrationModeGrounded && mode != RegistrationModeCentered {
+		return fmt.Errorf(
+			"isolated object %q registration mode %q is unsupported; expected %q or %q",
+			obj.ID,
+			mode,
+			RegistrationModeGrounded,
+			RegistrationModeCentered,
+		)
+	}
+	return nil
+}
+
+// EffectiveRegistrationMode returns the deterministic anchor policy. Static
+// isolated assets retain centered normalization until they opt into an
+// explicit reference-derived mode.
+func EffectiveRegistrationMode(obj Object) string {
+	if obj.Registration.Mode != "" {
+		return obj.Registration.Mode
+	}
+	if EffectiveRenderMode(obj) == RenderModeOpaqueTile {
+		return RegistrationModeCanvas
+	}
+	if len(obj.Animations) != 0 {
+		return RegistrationModeGrounded
+	}
+	return RegistrationModeCentered
 }
 
 func validateAnimatedDirectionReferences(dir, deployDir string, obj Object, referenceIDs map[string]string) error {
@@ -224,14 +293,33 @@ func validateAnimatedDirectionReferences(dir, deployDir string, obj Object, refe
 		if err != nil {
 			return fmt.Errorf("animated object %q direction %q reference %q: %w", obj.ID, value.ID, ref.Path, err)
 		}
-		if size != obj.Size {
-			return fmt.Errorf("animated object %q direction %q reference %q is %dx%d, expected %dx%d", obj.ID, value.ID, ref.Path, size.Width, size.Height, obj.Size.Width, obj.Size.Height)
+		if !validAnimatedDirectionReferenceSize(obj.Size, size) {
+			return fmt.Errorf(
+				"animated object %q direction %q reference %q is %dx%d, expected %dx%d or centered legacy %dx%d",
+				obj.ID,
+				value.ID,
+				ref.Path,
+				size.Width,
+				size.Height,
+				obj.Size.Width,
+				obj.Size.Height,
+				obj.Size.Width-64,
+				obj.Size.Height-64,
+			)
 		}
 	}
 	return nil
 }
 
-// DirectionReferenceID returns the stable evidence identity derived by V3
+func validAnimatedDirectionReferenceSize(target, reference Size) bool {
+	if reference == target {
+		return true
+	}
+	return target.Width-reference.Width == 64 &&
+		target.Height-reference.Height == 64
+}
+
+// DirectionReferenceID returns the stable evidence identity derived by V4
 // packs instead of repeated in configuration.
 func DirectionReferenceID(objectID, directionID string) string {
 	return "direction-reference-" + objectID + "-" + directionID

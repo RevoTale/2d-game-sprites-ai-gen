@@ -3,11 +3,11 @@
 Provider-neutral sprite-pack CLI with an OpenAI image backend and deterministic
 fake-provider tests.
 
-## Animated V9 workflow
+## Animated V10 workflow
 
 ```text
-direction references → character master → semantic animation boards
-→ complete-pose recovery → unit-wide registration
+direction references → canonical subject profile → character master
+→ semantic animation boards → complete-pose recovery → canonical registration
 → complete-unit review → atomic deployment
 ```
 
@@ -23,8 +23,19 @@ sprites-ai-gen deploy --pack . --run <run-id> --object blood-duelist
 An animated run makes one canonical character-master request and one request
 per configured animation. Logical anchors preserve direction and frame order,
 but they are not clipping boundaries. The generator recovers complete foreground
-poses, applies one unit-wide transform and palette, then presents the complete
+poses, applies one reference-derived unit transform and palette, then presents the complete
 unit for review and atomic deployment.
+
+Independent provider calls may render subjects at different source-coordinate
+scales. Frame `00` calibrates each animation/direction to the matching master
+view. One calibrated multiplier applies to the complete direction row, while
+one shared output anchor and canonical visible scale remain unit-wide
+invariants. Calibration evidence is written to `scale-calibration.json`.
+
+Neutral direction references are the only scale authority. Weapons, wings,
+tails, and other animation extents may use the complete native frame, but they
+cannot shrink the unit. A pose that does not fit the canonical transform is
+rejected.
 
 Each animation request has exactly one colored input: an opaque flat-chroma
 semantic board prefilled with the matching recovered master direction at each

@@ -1,6 +1,8 @@
 package generate
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -10,20 +12,11 @@ import (
 func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPlan) error {
 	unit := manifest.Units[plan.ID]
 	master := manifest.Intermediates[plan.MasterID]
-	paletteSources := append(
+	masterPaletteSources := append(
 		[]string(nil),
 		master.Artifacts.RecoveredPosePaths...,
 	)
-	allPoses := append([]imageio.SemanticPose(nil), master.Poses...)
-	for _, animation := range plan.Animations {
-		board := manifest.Intermediates[animation.BoardID]
-		paletteSources = append(
-			paletteSources,
-			board.Artifacts.RecoveredPosePaths...,
-		)
-		allPoses = append(allPoses, board.Poses...)
-	}
-	palette, err := imageio.SharedPaletteFromPNGs(paletteSources, 32)
+	palette, err := imageio.SharedPaletteFromPNGs(masterPaletteSources, 32)
 	if err != nil {
 		return err
 	}
@@ -31,17 +24,163 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 		return nil
 	}
 	frameSize := plan.Animations[0].Targets[0].Size
-	transform, err := imageio.FitSemanticUnitTransform(
-		allPoses,
+	if unit.Profile == nil {
+		return rejectAnimatedAssembly(
+			opts,
+			manifest,
+			unit,
+			"missing_canonical_subject_profile",
+		)
+	}
+	if unit.Profile.Version != imageio.CanonicalSubjectProfileVersion {
+		if err := rebuildCanonicalSubjectProfile(opts, unit, plan); err != nil {
+			return rejectAnimatedAssembly(
+				opts,
+				manifest,
+				unit,
+				"invalid_canonical_subject_profile: "+err.Error(),
+			)
+		}
+	}
+	transform, err := imageio.FitCanonicalSubjectTransform(
+		*unit.Profile,
+		master.Artifacts.RecoveredPosePaths,
+		master.Poses,
 		frameSize.Width,
 		frameSize.Height,
 	)
 	if err != nil {
-		unit.Status = StatusRejected
-		unit.HardRejections = []string{
-			"unsafe_shared_unit_transform: " + err.Error(),
+		return rejectAnimatedAssembly(
+			opts,
+			manifest,
+			unit,
+			"unsafe_shared_unit_transform: "+err.Error(),
+		)
+	}
+	masterPosesByDirection := make([][]imageio.SemanticPose, len(plan.Directions))
+	for directionIndex, pose := range master.Poses {
+		masterPosesByDirection[directionIndex] = append(
+			masterPosesByDirection[directionIndex],
+			pose,
+		)
+	}
+	masterScales := make([]float64, len(plan.Directions))
+	for directionIndex := range masterScales {
+		masterScales[directionIndex] = transform.Scale
+	}
+	poseSets := []imageio.SemanticPoseSet{{
+		PosesByDirection: masterPosesByDirection,
+		DirectionScales:  masterScales,
+	}}
+	calibrations := make(map[string]imageio.SemanticScaleCalibration, len(plan.Animations))
+	for _, animation := range plan.Animations {
+		board := manifest.Intermediates[animation.BoardID]
+		expectedPoses := len(plan.Directions) * len(animation.Frames)
+		if len(board.Poses) != expectedPoses {
+			return rejectAnimatedAssembly(
+				opts,
+				manifest,
+				unit,
+				"invalid_animation_pose_count: "+animation.ID,
+			)
 		}
-		return Save(opts.OutputDir, opts.RunID, manifest)
+		calibrationPaths := make([]string, len(plan.Directions))
+		boardPosesByDirection := make([][]imageio.SemanticPose, len(plan.Directions))
+		for directionIndex := range plan.Directions {
+			start := directionIndex * len(animation.Frames)
+			calibrationPaths[directionIndex] = board.Artifacts.RecoveredPosePaths[start]
+			boardPosesByDirection[directionIndex] = append(
+				boardPosesByDirection[directionIndex],
+				board.Poses[start:start+len(animation.Frames)]...,
+			)
+		}
+		calibration, calibrationErr := imageio.CalibrateSemanticPoseSet(
+			master.Artifacts.RecoveredPosePaths,
+			calibrationPaths,
+			unit.Profile.Mode,
+			transform.Scale,
+		)
+		if calibrationErr != nil {
+			return rejectAnimatedAssembly(
+				opts,
+				manifest,
+				unit,
+				"invalid_board_scale_calibration: "+animation.ID+": "+
+					calibrationErr.Error(),
+			)
+		}
+		calibration.PoseMeasurements, calibrationErr = imageio.MeasureSemanticPoses(
+			board.Artifacts.RecoveredPosePaths,
+			board.Poses,
+			calibration.DirectionScales,
+			len(animation.Frames),
+			unit.Profile.Mode,
+		)
+		if calibrationErr != nil {
+			return rejectAnimatedAssembly(
+				opts,
+				manifest,
+				unit,
+				"invalid_board_pose_measurement: "+animation.ID+": "+
+					calibrationErr.Error(),
+			)
+		}
+		calibrationPath := filepath.Join(
+			filepath.Dir(board.NormalizedPath),
+			"scale-calibration.json",
+		)
+		if err := imageio.WriteSemanticScaleCalibration(
+			calibrationPath,
+			calibration,
+		); err != nil {
+			return err
+		}
+		board.ScaleCalibration = &calibration
+		board.Artifacts.ScaleCalibrationPath = calibrationPath
+		calibrations[animation.BoardID] = calibration
+		safeWidth := frameSize.Width -
+			2*imageio.CanonicalFrameEdgePadding(frameSize.Width, frameSize.Height)
+		safeHeight := frameSize.Height -
+			2*imageio.CanonicalFrameEdgePadding(frameSize.Width, frameSize.Height)
+		for _, measurement := range calibration.PoseMeasurements {
+			if measurement.CanonicalWidth <= safeWidth &&
+				measurement.CanonicalHeight <= safeHeight {
+				continue
+			}
+			return rejectAnimatedAssembly(
+				opts,
+				manifest,
+				unit,
+				fmt.Sprintf(
+					"unsafe_canonical_pose_extent: %s direction %s frame %s requires %dx%d, safe frame is %dx%d",
+					animation.ID,
+					plan.Directions[measurement.Direction].ID,
+					animation.Frames[measurement.Frame].ID,
+					measurement.CanonicalWidth,
+					measurement.CanonicalHeight,
+					safeWidth,
+					safeHeight,
+				),
+			)
+		}
+		poseSets = append(poseSets, imageio.SemanticPoseSet{
+			PosesByDirection: boardPosesByDirection,
+			DirectionScales:  calibration.DirectionScales,
+		})
+	}
+	transform, err = imageio.ConstrainSemanticUnitAnchorsAcrossPoseSets(
+		transform,
+		poseSets,
+		frameSize.Width,
+		frameSize.Height,
+	)
+	if err != nil {
+		return rejectAnimatedAssembly(
+			opts,
+			manifest,
+			unit,
+			"unsafe_shared_unit_anchor: "+err.Error(),
+		)
 	}
 	unit.HardRejections = nil
 	unit.Transform = &transform
@@ -50,8 +189,10 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 		return err
 	}
 	unit.Artifacts = ReviewArtifacts{
-		CurrentReferenceSheetPath: master.Artifacts.CurrentReferenceSheetPath,
-		MasterSheetPath:           master.NormalizedPath,
+		CurrentReferenceSheetPath:   master.Artifacts.CurrentReferenceSheetPath,
+		MasterSheetPath:             master.NormalizedPath,
+		CanonicalProfilePath:        unit.Artifacts.CanonicalProfilePath,
+		CanonicalProfileOverlayPath: unit.Artifacts.CanonicalProfileOverlayPath,
 	}
 	unit.MasterLineage = master.Lineage
 	unit.AnimationLineages = map[string]string{}
@@ -59,25 +200,33 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 	animationFrames := make(map[string][]string, len(plan.Animations))
 	for _, animation := range plan.Animations {
 		board := manifest.Intermediates[animation.BoardID]
+		calibration := calibrations[animation.BoardID]
 		outputs := make([]string, len(animation.Targets))
 		for index, target := range animation.Targets {
 			outputs[index] = filepath.Join(TargetDir(opts.OutputDir, opts.RunID, target.ID), "normalized.png")
 		}
-		transforms, normalizeErr := imageio.WriteRegisteredSemanticPoses(
+		transforms, normalizeErr := imageio.WriteCalibratedSemanticPoses(
 			board.Artifacts.RecoveredPosePaths,
 			board.Poses,
 			outputs,
 			animation.Targets[0].Size.Width,
 			animation.Targets[0].Size.Height,
 			palette,
-			transform,
+			transform.DirectionAnchors,
+			calibration.DirectionScales,
+			len(animation.Frames),
 		)
 		if normalizeErr != nil {
 			board.Status = StatusRejected
 			board.HardRejections = []string{
 				"unsafe_production_frame: " + normalizeErr.Error(),
 			}
-			return Save(opts.OutputDir, opts.RunID, manifest)
+			return rejectAnimatedAssembly(
+				opts,
+				manifest,
+				unit,
+				board.HardRejections[0],
+			)
 		}
 		board.Artifacts.FramePaths = outputs
 		board.Artifacts.AnimationBoardPaths = []string{board.NormalizedPath}
@@ -105,10 +254,10 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 			state.CellIndex = index
 			state.Dependencies = []string{master.ID, board.ID, unit.ID}
 			state.ProductionEligible = true
-			state.CapabilityMode = "v9-semantic-board"
+			state.CapabilityMode = "v10-board-calibrated-registration"
 			state.Palette = palette
 			state.Normalization = &NormalizationRecord{
-				ScaleAlgorithm: "unit-wide-body-pivot-area",
+				ScaleAlgorithm: "reference-derived-board-calibrated-subject",
 				PaletteMethod:  "deterministic-median-cut",
 				MaximumColors:  32, ColorSpace: "linear-srgb",
 				Dithering: false, AlphaThreshold: 128,
@@ -141,10 +290,16 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 		frameSize.Height,
 		palette,
 		transform,
+		1,
 	); err != nil {
 		master.Status = StatusRejected
 		master.HardRejections = []string{"unsafe_character_master_frame: " + err.Error()}
-		return Save(opts.OutputDir, opts.RunID, manifest)
+		return rejectAnimatedAssembly(
+			opts,
+			manifest,
+			unit,
+			master.HardRejections[0],
+		)
 	}
 	comparisonColumns := 1
 	for _, animation := range plan.Animations {
@@ -178,6 +333,7 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 		return err
 	}
 	unit.Artifacts.FramePaths = allFrames
+	unit.AssemblyVersion = AnimatedAssemblyVersion
 	unit.Status = StatusAwaitingReview
 	unit.Review = nil
 	unit.Deploy = nil
@@ -187,6 +343,99 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 	unit.Artifacts.QAPath = filepath.Join(unitDir, "qa.md")
 	for _, targetID := range unit.TargetIDs {
 		manifest.Targets[targetID].Artifacts = unit.Artifacts
+	}
+	return Save(opts.OutputDir, opts.RunID, manifest)
+}
+
+func rebuildCanonicalSubjectProfile(
+	opts Options,
+	unit *UnitState,
+	plan animatedUnitPlan,
+) error {
+	referencePaths := make([]string, len(plan.Directions))
+	for index, direction := range plan.Directions {
+		referencePaths[index] = direction.ReferencePath
+	}
+	profile, err := imageio.BuildCanonicalSubjectProfile(
+		referencePaths,
+		imageio.SubjectRegistrationMode(plan.RegistrationMode),
+	)
+	if err != nil {
+		return err
+	}
+	if unit.Profile != nil {
+		if len(unit.Profile.ReferenceHashes) != len(profile.ReferenceHashes) {
+			return fmt.Errorf("canonical profile reference lineage is incomplete")
+		}
+		for index := range profile.ReferenceHashes {
+			if unit.Profile.ReferenceHashes[index] != profile.ReferenceHashes[index] {
+				return fmt.Errorf(
+					"direction %s reference changed after generation",
+					plan.Directions[index].ID,
+				)
+			}
+		}
+	}
+	dir := filepath.Join(
+		runRoot(opts),
+		"intermediates",
+		plan.ObjectID,
+		"character-master",
+	)
+	profilePath := filepath.Join(dir, "canonical-profile.json")
+	if err := imageio.WriteCanonicalSubjectProfile(profilePath, profile); err != nil {
+		return err
+	}
+	overlayPath := filepath.Join(dir, "canonical-profile-overlay.png")
+	if err := imageio.WriteCanonicalSubjectProfileOverlay(
+		referencePaths,
+		overlayPath,
+		profile,
+	); err != nil {
+		return err
+	}
+	unit.Profile = &profile
+	unit.Artifacts.CanonicalProfilePath = profilePath
+	unit.Artifacts.CanonicalProfileOverlayPath = overlayPath
+	return nil
+}
+
+func rejectAnimatedAssembly(
+	opts Options,
+	manifest *Manifest,
+	unit *UnitState,
+	reason string,
+) error {
+	unit.Status = StatusRejected
+	unit.AssemblyVersion = AnimatedAssemblyVersion
+	unit.HardRejections = []string{reason}
+	unit.Review = nil
+	unit.Deploy = nil
+	unit.Artifacts.CompleteUnitSheetPath = ""
+	unit.Artifacts.IdentityComparisonPath = ""
+	unit.Artifacts.AnimationGIFPaths = nil
+	unit.Artifacts.FramePaths = nil
+	unitDir := filepath.Join(runRoot(opts), "units", unit.ObjectID)
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		return err
+	}
+	if err := writeQA(unitDir, StatusRejected, reason); err != nil {
+		return err
+	}
+	unit.Artifacts.QAPath = filepath.Join(unitDir, "qa.md")
+	for _, targetID := range unit.TargetIDs {
+		target := manifest.Targets[targetID]
+		if target == nil {
+			continue
+		}
+		target.Status = StatusRejected
+		target.NormalizedPath = ""
+		target.ProductionEligible = false
+		target.Normalization = nil
+		target.HardRejections = []string{reason}
+		target.Review = nil
+		target.Deploy = nil
+		target.Artifacts = ReviewArtifacts{}
 	}
 	return Save(opts.OutputDir, opts.RunID, manifest)
 }

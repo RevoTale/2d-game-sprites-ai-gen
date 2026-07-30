@@ -170,6 +170,7 @@ const (
 	openAIMaxPixels      = 8294400
 	openAIMaxAspect      = 3
 	defaultOpenAITimeout = 10 * time.Minute
+	defaultOpenAIQuality = "high"
 )
 
 type openAIImageRequest struct {
@@ -178,6 +179,7 @@ type openAIImageRequest struct {
 	Size         string `json:"size"`
 	OutputFormat string `json:"output_format"`
 	Background   string `json:"background"`
+	Quality      string `json:"quality"`
 }
 
 func (o OpenAI) Capabilities() Capabilities {
@@ -223,7 +225,12 @@ func openAIHTTPClient(base *http.Client, timeout time.Duration) *http.Client {
 }
 
 func (o OpenAI) generateFromPrompt(ctx context.Context, client *http.Client, apiKey, model string, req Request, providerSize image.Point) (Result, error) {
-	body := openAIImageRequest{Model: model, Prompt: req.Prompt, Size: fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y), OutputFormat: "png", Background: "opaque"}
+	body := openAIImageRequest{
+		Model: model, Prompt: req.Prompt,
+		Size:         fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y),
+		OutputFormat: "png", Background: "opaque",
+		Quality: defaultOpenAIQuality,
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return Result{}, err
@@ -249,7 +256,12 @@ func (o OpenAI) generateFromPrompt(ctx context.Context, client *http.Client, api
 	if err := validateProviderPNG(pngBytes, providerSize); err != nil {
 		return Result{}, err
 	}
-	return Result{PNG: pngBytes, Metadata: map[string]string{"provider": "openai", "model": model, "providerSize": fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y), "endpoint": "generations"}}, nil
+	return Result{PNG: pngBytes, Metadata: map[string]string{
+		"provider": "openai", "model": model,
+		"providerSize": fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y),
+		"quality":      defaultOpenAIQuality,
+		"endpoint":     "generations",
+	}}, nil
 }
 
 func (o OpenAI) generateEdit(ctx context.Context, client *http.Client, apiKey, model string, req Request, providerSize image.Point) (Result, error) {
@@ -270,6 +282,9 @@ func (o OpenAI) generateEdit(ctx context.Context, client *http.Client, apiKey, m
 		return Result{}, err
 	}
 	if err := writer.WriteField("background", "opaque"); err != nil {
+		return Result{}, err
+	}
+	if err := writer.WriteField("quality", defaultOpenAIQuality); err != nil {
 		return Result{}, err
 	}
 	var mask *conditioning.Input
@@ -315,7 +330,12 @@ func (o OpenAI) generateEdit(ctx context.Context, client *http.Client, apiKey, m
 	if err := validateProviderPNG(pngBytes, providerSize); err != nil {
 		return Result{}, err
 	}
-	return Result{PNG: pngBytes, Metadata: map[string]string{"provider": "openai", "model": model, "providerSize": fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y), "endpoint": "edits"}}, nil
+	return Result{PNG: pngBytes, Metadata: map[string]string{
+		"provider": "openai", "model": model,
+		"providerSize": fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y),
+		"quality":      defaultOpenAIQuality,
+		"endpoint":     "edits",
+	}}, nil
 }
 
 func validateProviderPNG(data []byte, expected image.Point) error {

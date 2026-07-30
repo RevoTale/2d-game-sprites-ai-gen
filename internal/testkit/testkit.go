@@ -62,7 +62,7 @@ func WritePack(t *testing.T) string {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("smooth pixel art"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 3,
+  "version": 4,
   "outputDir": "output",
   "deployDir": "deploy",
   "objects": [
@@ -70,14 +70,15 @@ func WritePack(t *testing.T) string {
       "id": "blood-duelist",
       "description": "Elegant demonic duelist.",
       "identityLocks": ["Gold horned silhouette.", "Sword remains in the right hand."],
+      "registration": {"mode":"grounded"},
       "size": { "width": 16, "height": 16 },
       "variants": [
         {
           "id": "direction",
           "description": "Facing direction.",
           "values": [
-            { "id": "right", "description": "Right side view.", "reference": {"path":"direction-right.png","description":"Current right-facing identity reference."} },
-            { "id": "up", "description": "Back view.", "reference": {"path":"direction-up.png","description":"Current up-facing identity reference."} }
+            { "id": "right", "description": "Right side view.", "reference": {"path":"direction-right.png","description":"Current right-facing view-geometry and registration reference; colors are not authoritative."} },
+            { "id": "up", "description": "Back view.", "reference": {"path":"direction-up.png","description":"Current up-facing view-geometry and registration reference; colors are not authoritative."} }
           ]
         }
       ],
@@ -114,7 +115,7 @@ func WriteFullUnitPack(t *testing.T) string {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("smooth pixel art"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 3,
+  "version": 4,
   "outputDir": "output",
   "deployDir": "deploy",
   "objects": [{
@@ -125,14 +126,15 @@ func WriteFullUnitPack(t *testing.T) string {
       "Shield remains a blue-and-gold kite shield with cross heraldry.",
       "Sword and shield remain on their established sides."
     ],
-    "size": {"width": 320, "height": 320},
+    "registration":{"mode":"grounded"},
+    "size": {"width": 384, "height": 384},
     "variants": [{
       "id": "direction",
       "description": "Authored battlefield direction.",
       "values": [
-        {"id":"down","description":"Front-facing down view.","reference":{"path":"deploy/units/relic-knight__walk__down__00.png","description":"Current down-facing identity reference."}},
-        {"id":"up","description":"Back-facing up view.","reference":{"path":"deploy/units/relic-knight__walk__up__00.png","description":"Current up-facing identity reference."}},
-        {"id":"right","description":"Side view facing right.","reference":{"path":"deploy/units/relic-knight__walk__right__00.png","description":"Current right-facing identity reference."}}
+        {"id":"down","description":"Front-facing down view.","reference":{"path":"deploy/units/relic-knight__walk__down__00.png","description":"Current down-facing view-geometry and registration reference; colors are not authoritative."}},
+        {"id":"up","description":"Back-facing up view.","reference":{"path":"deploy/units/relic-knight__walk__up__00.png","description":"Current up-facing view-geometry and registration reference; colors are not authoritative."}},
+        {"id":"right","description":"Side view facing right.","reference":{"path":"deploy/units/relic-knight__walk__right__00.png","description":"Current right-facing view-geometry and registration reference; colors are not authoritative."}}
       ]
     }],
     "animations": [

@@ -5,94 +5,122 @@ import (
 	"image"
 	"image/draw"
 	"math"
-	"sort"
 )
 
-// SemanticUnitTransform is the one scale and body pivot shared by every
-// generated frame in an animated unit.
+// SemanticUnitTransform records the canonical appearance scale and the one
+// shared output anchor per direction. Independent provider boards may require
+// different source-coordinate scales to reproduce this canonical appearance.
 type SemanticUnitTransform struct {
-	Scale    float64 `json:"scale"`
-	Baseline int     `json:"baseline"`
-	CenterX  int     `json:"centerX"`
+	Scale            float64       `json:"scale"`
+	DirectionAnchors []image.Point `json:"directionAnchors"`
 }
 
-// FitSemanticUnitTransform derives one target body scale, then reduces that
-// single unit-wide scale only when the complete pose envelope requires it.
-func FitSemanticUnitTransform(
-	poses []SemanticPose,
+// SemanticPoseSet is one provider board expressed in its own source-coordinate
+// scale. Every pose of one direction must use the same scale.
+type SemanticPoseSet struct {
+	PosesByDirection [][]SemanticPose
+	DirectionScales  []float64
+}
+
+// ConstrainSemanticUnitAnchors minimally shifts each preferred neutral-view
+// anchor into the interval where every complete pose of that direction fits.
+// The reference-derived scale and the one-anchor-per-direction invariant remain
+// unchanged.
+func ConstrainSemanticUnitAnchors(
+	transform SemanticUnitTransform,
+	posesByDirection [][]SemanticPose,
 	width, height int,
 ) (SemanticUnitTransform, error) {
-	if len(poses) == 0 || width <= 0 || height <= 0 {
+	scales := make([]float64, len(transform.DirectionAnchors))
+	for index := range scales {
+		scales[index] = transform.Scale
+	}
+	return ConstrainSemanticUnitAnchorsAcrossPoseSets(
+		transform,
+		[]SemanticPoseSet{{
+			PosesByDirection: posesByDirection,
+			DirectionScales:  scales,
+		}},
+		width,
+		height,
+	)
+}
+
+// ConstrainSemanticUnitAnchorsAcrossPoseSets intersects the feasible output
+// anchor ranges of the canonical master and every independently calibrated
+// animation board. It never changes a pose-set scale to make content fit.
+func ConstrainSemanticUnitAnchorsAcrossPoseSets(
+	transform SemanticUnitTransform,
+	poseSets []SemanticPoseSet,
+	width, height int,
+) (SemanticUnitTransform, error) {
+	if transform.Scale <= 0 || width <= 0 || height <= 0 ||
+		len(transform.DirectionAnchors) == 0 || len(poseSets) == 0 {
 		return SemanticUnitTransform{}, fmt.Errorf(
-			"semantic unit transform requires poses and a positive frame size",
+			"semantic anchor constraint requires a positive transform, frame, and pose sets",
 		)
-	}
-	coreHeights := make([]int, len(poses))
-	for index, pose := range poses {
-		if pose.Bounds.Empty() || pose.CoreBounds.Empty() ||
-			!pose.Pivot.In(pose.CoreBounds.Inset(-1)) {
-			return SemanticUnitTransform{}, fmt.Errorf(
-				"pose %02d has invalid body registration evidence",
-				index,
-			)
-		}
-		coreHeights[index] = pose.CoreBounds.Dy()
-	}
-	sort.Ints(coreHeights)
-	medianCoreHeight := coreHeights[len(coreHeights)/2]
-	targetBodyHeight := max(1, int(math.Round(float64(height)*0.625)))
-	transform := SemanticUnitTransform{
-		Scale:    float64(targetBodyHeight) / float64(medianCoreHeight),
-		Baseline: height - max(2, height/20),
-		CenterX:  width / 2,
 	}
 	safe := image.Rect(0, 0, width, height).Inset(
 		CanonicalFrameEdgePadding(width, height),
 	)
-	transform.Scale = fitSemanticUnitScale(poses, transform, safe)
-	for index, pose := range poses {
-		if destination := semanticPoseDestination(pose, transform); !destination.In(safe) {
+	if safe.Empty() {
+		return SemanticUnitTransform{}, fmt.Errorf(
+			"%w: production frame has no safe area",
+			ErrProductionFrameClipping,
+		)
+	}
+	adjusted := transform
+	adjusted.DirectionAnchors = append(
+		[]image.Point(nil),
+		transform.DirectionAnchors...,
+	)
+	for directionIndex := range transform.DirectionAnchors {
+		minX, maxX := safe.Min.X, safe.Max.X
+		minY, maxY := safe.Min.Y, safe.Max.Y
+		for setIndex, poseSet := range poseSets {
+			if len(poseSet.PosesByDirection) != len(transform.DirectionAnchors) ||
+				len(poseSet.DirectionScales) != len(transform.DirectionAnchors) {
+				return SemanticUnitTransform{}, fmt.Errorf(
+					"semantic pose set %02d has mismatched directions or scales",
+					setIndex,
+				)
+			}
+			poses := poseSet.PosesByDirection[directionIndex]
+			scale := poseSet.DirectionScales[directionIndex]
+			if len(poses) == 0 || scale <= 0 {
+				return SemanticUnitTransform{}, fmt.Errorf(
+					"semantic pose set %02d direction %02d has no poses or positive scale",
+					setIndex,
+					directionIndex,
+				)
+			}
+			for _, pose := range poses {
+				relative := semanticPoseDestination(
+					pose,
+					scale,
+					image.Point{},
+				)
+				minX = max(minX, safe.Min.X-relative.Min.X)
+				maxX = min(maxX, safe.Max.X-relative.Max.X)
+				minY = max(minY, safe.Min.Y-relative.Min.Y)
+				maxY = min(maxY, safe.Max.Y-relative.Max.Y)
+			}
+		}
+		if minX > maxX || minY > maxY {
 			return SemanticUnitTransform{}, fmt.Errorf(
-				"%w: pose %02d extent %v cannot fit shared unit transform in %v",
+				"%w: direction %02d has no shared feasible anchor within %v",
 				ErrProductionFrameClipping,
-				index,
-				destination,
+				directionIndex,
 				safe,
 			)
 		}
+		preferred := transform.DirectionAnchors[directionIndex]
+		adjusted.DirectionAnchors[directionIndex] = image.Pt(
+			max(minX, min(maxX, preferred.X)),
+			max(minY, min(maxY, preferred.Y)),
+		)
 	}
-	return transform, nil
-}
-
-func fitSemanticUnitScale(
-	poses []SemanticPose,
-	transform SemanticUnitTransform,
-	safe image.Rectangle,
-) float64 {
-	fits := func(scale float64) bool {
-		candidate := transform
-		candidate.Scale = scale
-		for _, pose := range poses {
-			if !semanticPoseDestination(pose, candidate).In(safe) {
-				return false
-			}
-		}
-		return true
-	}
-	if fits(transform.Scale) {
-		return transform.Scale
-	}
-
-	low, high := 0.0, transform.Scale
-	for range 64 {
-		middle := (low + high) / 2
-		if fits(middle) {
-			low = middle
-		} else {
-			high = middle
-		}
-	}
-	return low
+	return adjusted, nil
 }
 
 // WriteRegisteredSemanticPoses applies an already-proven unit transform. It
@@ -104,6 +132,37 @@ func WriteRegisteredSemanticPoses(
 	width, height int,
 	palette []PaletteColor,
 	transform SemanticUnitTransform,
+	framesPerDirection int,
+) ([]CanonicalTransform, error) {
+	scales := make([]float64, len(transform.DirectionAnchors))
+	for index := range scales {
+		scales[index] = transform.Scale
+	}
+	return WriteCalibratedSemanticPoses(
+		posePaths,
+		poses,
+		outputPaths,
+		width,
+		height,
+		palette,
+		transform.DirectionAnchors,
+		scales,
+		framesPerDirection,
+	)
+}
+
+// WriteCalibratedSemanticPoses applies one source-coordinate scale per
+// direction and the unit's already-proven shared output anchors. It cannot
+// fit, center, crop, or shrink any pose independently.
+func WriteCalibratedSemanticPoses(
+	posePaths []string,
+	poses []SemanticPose,
+	outputPaths []string,
+	width, height int,
+	palette []PaletteColor,
+	directionAnchors []image.Point,
+	directionScales []float64,
+	framesPerDirection int,
 ) ([]CanonicalTransform, error) {
 	if len(posePaths) == 0 ||
 		len(posePaths) != len(poses) ||
@@ -111,6 +170,25 @@ func WriteRegisteredSemanticPoses(
 		return nil, fmt.Errorf(
 			"semantic normalization requires matching non-empty poses and outputs",
 		)
+	}
+	if framesPerDirection <= 0 ||
+		len(directionAnchors) == 0 ||
+		len(directionAnchors) != len(directionScales) ||
+		len(poses) != len(directionAnchors)*framesPerDirection {
+		return nil, fmt.Errorf(
+			"semantic normalization has %d poses for %d direction anchors and %d frames per direction",
+			len(poses),
+			len(directionAnchors),
+			framesPerDirection,
+		)
+	}
+	for directionIndex, scale := range directionScales {
+		if scale <= 0 {
+			return nil, fmt.Errorf(
+				"semantic normalization direction %02d has non-positive scale",
+				directionIndex,
+			)
+		}
 	}
 	safe := image.Rect(0, 0, width, height).Inset(
 		CanonicalFrameEdgePadding(width, height),
@@ -130,7 +208,10 @@ func WriteRegisteredSemanticPoses(
 				pose.Bounds.Size(),
 			)
 		}
-		destination := semanticPoseDestination(pose, transform)
+		directionIndex := index / framesPerDirection
+		anchor := directionAnchors[directionIndex]
+		scale := directionScales[directionIndex]
+		destination := semanticPoseDestination(pose, scale, anchor)
 		if !destination.In(safe) {
 			return nil, fmt.Errorf(
 				"%w: pose %02d cannot fit shared unit transform",
@@ -142,8 +223,8 @@ func WriteRegisteredSemanticPoses(
 		areaScale(frame, destination, source, source.Bounds())
 		frames[index] = frame
 		evidence[index] = CanonicalTransform{
-			Scale: transform.Scale, Baseline: transform.Baseline,
-			CenterX: transform.CenterX,
+			Scale: scale, Baseline: anchor.Y,
+			CenterX: anchor.X,
 			OffsetX: destination.Min.X, OffsetY: destination.Min.Y,
 		}
 	}
@@ -177,15 +258,16 @@ func WriteRegisteredSemanticPoses(
 
 func semanticPoseDestination(
 	pose SemanticPose,
-	transform SemanticUnitTransform,
+	scale float64,
+	anchor image.Point,
 ) image.Rectangle {
-	left := transform.CenterX + int(math.Round(
-		float64(pose.Bounds.Min.X-pose.Pivot.X)*transform.Scale,
+	left := anchor.X + int(math.Round(
+		float64(pose.Bounds.Min.X-pose.Pivot.X)*scale,
 	))
-	top := transform.Baseline + int(math.Round(
-		float64(pose.Bounds.Min.Y-pose.Pivot.Y)*transform.Scale,
+	top := anchor.Y + int(math.Round(
+		float64(pose.Bounds.Min.Y-pose.Pivot.Y)*scale,
 	))
-	width := max(1, int(math.Round(float64(pose.Bounds.Dx())*transform.Scale)))
-	height := max(1, int(math.Round(float64(pose.Bounds.Dy())*transform.Scale)))
+	width := max(1, int(math.Round(float64(pose.Bounds.Dx())*scale)))
+	height := max(1, int(math.Round(float64(pose.Bounds.Dy())*scale)))
 	return image.Rect(left, top, left+width, top+height)
 }

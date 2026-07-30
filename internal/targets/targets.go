@@ -12,22 +12,23 @@ import (
 )
 
 type Target struct {
-	ID             string
-	ObjectID       string
-	ObjectDesc     string
-	IdentityLocks  []string
-	RenderMode     string
-	AnimationID    string
-	AnimationDesc  string
-	AnimationIndex int
-	FrameID        string
-	FrameDesc      string
-	FrameIndex     int
-	Size           pack.Size
-	Variants       []VariantSelection
-	Inputs         []conditioning.Input
-	DeployTemplate string
-	Prompt         string
+	ID               string
+	ObjectID         string
+	ObjectDesc       string
+	IdentityLocks    []string
+	RenderMode       string
+	RegistrationMode string
+	AnimationID      string
+	AnimationDesc    string
+	AnimationIndex   int
+	FrameID          string
+	FrameDesc        string
+	FrameIndex       int
+	Size             pack.Size
+	Variants         []VariantSelection
+	Inputs           []conditioning.Input
+	DeployTemplate   string
+	Prompt           string
 }
 
 type VariantSelection struct {
@@ -191,21 +192,22 @@ func makeTarget(p *pack.Pack, obj pack.Object, variants []variantComboValue, ani
 		inputs = append(inputs, roleInputs(conditioning.RolePose, frame.References)...)
 	}
 	target := Target{
-		ID:             strings.Join(parts, "__"),
-		ObjectID:       obj.ID,
-		ObjectDesc:     obj.Description,
-		IdentityLocks:  append([]string(nil), obj.IdentityLocks...),
-		RenderMode:     pack.EffectiveRenderMode(obj),
-		AnimationID:    animation.ID,
-		AnimationDesc:  animation.Description,
-		AnimationIndex: animationIndex,
-		FrameID:        frameID,
-		FrameDesc:      frame.Description,
-		FrameIndex:     frameIndex,
-		Size:           obj.Size,
-		Variants:       selections,
-		Inputs:         inputs,
-		DeployTemplate: pack.DeployTemplate(obj),
+		ID:               strings.Join(parts, "__"),
+		ObjectID:         obj.ID,
+		ObjectDesc:       obj.Description,
+		IdentityLocks:    append([]string(nil), obj.IdentityLocks...),
+		RenderMode:       pack.EffectiveRenderMode(obj),
+		RegistrationMode: pack.EffectiveRegistrationMode(obj),
+		AnimationID:      animation.ID,
+		AnimationDesc:    animation.Description,
+		AnimationIndex:   animationIndex,
+		FrameID:          frameID,
+		FrameDesc:        frame.Description,
+		FrameIndex:       frameIndex,
+		Size:             obj.Size,
+		Variants:         selections,
+		Inputs:           inputs,
+		DeployTemplate:   pack.DeployTemplate(obj),
 	}
 	target.Prompt = BuildPrompt(theme, target)
 	return target

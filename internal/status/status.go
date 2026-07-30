@@ -1,4 +1,4 @@
-// Package status renders manifest-V9 scope summaries and executable next actions.
+// Package status renders manifest-V10 scope summaries and executable next actions.
 package status
 
 import (
@@ -140,6 +140,8 @@ func artifactPaths(artifacts generate.ReviewArtifacts) []string {
 		artifacts.EvidencePath,
 		artifacts.QAPath,
 		artifacts.CurrentReferenceSheetPath,
+		artifacts.CanonicalProfilePath,
+		artifacts.CanonicalProfileOverlayPath,
 		artifacts.MasterSheetPath,
 		artifacts.CandidateSheetPath,
 		artifacts.BoardMetricsPath,

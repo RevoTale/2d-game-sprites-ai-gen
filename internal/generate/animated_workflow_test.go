@@ -43,17 +43,17 @@ func TestRunIDMustBeOneSafePathComponent(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(outputDir, "..", "escape", "manifest.json"))
 }
 
-func TestLoadRejectsV8RunWithoutModifyingIt(t *testing.T) {
+func TestLoadRejectsV9RunWithoutModifyingIt(t *testing.T) {
 	outputDir := t.TempDir()
 	path := generate.ManifestPath(outputDir, "old-run")
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-	original := []byte("{\n  \"version\": 8,\n  \"runId\": \"old-run\"\n}\n")
+	original := []byte("{\n  \"version\": 9,\n  \"runId\": \"old-run\"\n}\n")
 	require.NoError(t, os.WriteFile(path, original, 0o644))
 
 	_, err := generate.Load(outputDir, "old-run")
 
-	require.ErrorContains(t, err, "unsupported manifest v8")
-	require.ErrorContains(t, err, "manifest v9")
+	require.ErrorContains(t, err, "unsupported manifest v9")
+	require.ErrorContains(t, err, "manifest v10")
 	actual, readErr := os.ReadFile(path)
 	require.NoError(t, readErr)
 	require.Equal(t, original, actual)
@@ -86,6 +86,9 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 	require.Contains(t, gen.requests[0].Prompt, "may cross a midpoint")
 	require.Contains(t, gen.requests[0].Prompt, "look toward screen-right/east")
 	require.Contains(t, gen.requests[0].Prompt, "complete forward weapon")
+	require.Contains(t, gen.requests[0].Prompt, "authoritative for appearance, materials, and colors")
+	require.Contains(t, gen.requests[0].Prompt, "authoritative only for facing")
+	require.Contains(t, gen.requests[0].Prompt, "Never inherit direction-specific recoloring")
 	require.Contains(t, gen.requests[1].Prompt, "# CLI Protocol")
 	require.Contains(t, gen.requests[1].Prompt, "# Evidence Authority")
 	require.Contains(t, gen.requests[1].Prompt, "# Sprite Facts")
@@ -99,6 +102,17 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 	require.Contains(t, gen.requests[1].Prompt, "Never crop, mirror, independently fit")
 	require.Contains(t, gen.requests[1].Prompt, "fixed-size shapes")
 	require.Contains(t, gen.requests[1].Prompt, "backswing and follow-through")
+	require.Contains(
+		t,
+		gen.requests[1].Prompt,
+		"fit unchanged inside the same final native 384x384 rectangle",
+	)
+	require.Contains(t, gen.requests[1].Prompt, "one fixed body anchor")
+	require.Contains(t, gen.requests[1].Prompt, "Stage wide motion diagonally or in depth")
+	require.Contains(t, gen.requests[1].Prompt, "Never solve fit by shortening equipment")
+	require.Contains(t, gen.requests[2].Prompt, "one compact arc inside the shared final-frame rectangle")
+	require.Contains(t, gen.requests[1].Prompt, "including behind a backswing")
+	require.Contains(t, gen.requests[1].Prompt, "Preserve exact material colors, saturation, and contrast")
 	require.Less(t, len(gen.requests[0].Prompt), 3_000)
 	require.Less(t, len(gen.requests[1].Prompt), 4_500)
 	for _, request := range gen.requests {
@@ -106,6 +120,16 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 			require.NotEqual(t, conditioning.RoleMask, input.Role)
 		}
 	}
+	directionInputs := 0
+	for _, input := range gen.requests[0].Inputs {
+		if !strings.HasPrefix(input.ID, "direction-reference-") {
+			continue
+		}
+		directionInputs++
+		require.Equal(t, conditioning.RolePose, input.Role)
+		require.Equal(t, "configured-direction-geometry", input.Authority)
+	}
+	require.Equal(t, 3, directionInputs)
 
 	manifest, err := generate.Load(filepath.Join(dir, p.OutputDir), "run")
 	require.NoError(t, err)
@@ -114,19 +138,64 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 	require.Equal(t, generate.StatusReady, manifest.Intermediates["animation-board:relic-knight:attack"].Status)
 	require.Equal(t, generate.StatusAwaitingReview, manifest.Units["unit:relic-knight"].Status)
 	require.Len(t, manifest.Units["unit:relic-knight"].TargetIDs, 24)
+	require.Equal(t, generate.AnimatedAssemblyVersion, manifest.Units["unit:relic-knight"].AssemblyVersion)
+	require.NotNil(t, manifest.Units["unit:relic-knight"].Profile)
+	require.Len(t, manifest.Units["unit:relic-knight"].Transform.DirectionAnchors, 3)
+	require.FileExists(t, manifest.Units["unit:relic-knight"].Artifacts.CanonicalProfilePath)
+	require.FileExists(t, manifest.Units["unit:relic-knight"].Artifacts.CanonicalProfileOverlayPath)
 	comparisonSize, err := imageio.PNGDimensions(manifest.Units["unit:relic-knight"].Artifacts.IdentityComparisonPath)
 	require.NoError(t, err)
-	require.Equal(t, image.Pt(2992, 1000), comparisonSize)
+	require.Equal(t, image.Pt(3568, 1192), comparisonSize)
 	completeUnitSize, err := imageio.PNGDimensions(manifest.Units["unit:relic-knight"].Artifacts.CompleteUnitSheetPath)
 	require.NoError(t, err)
-	require.Equal(t, image.Pt(7680, 320), completeUnitSize)
+	require.Equal(t, image.Pt(9216, 384), completeUnitSize)
 	for _, targetID := range manifest.Units["unit:relic-knight"].TargetIDs {
 		require.Equal(t, generate.StatusAwaitingReview, manifest.Targets[targetID].Status)
+		require.Equal(
+			t,
+			"reference-derived-board-calibrated-subject",
+			manifest.Targets[targetID].Normalization.ScaleAlgorithm,
+		)
 		require.FileExists(t, manifest.Targets[targetID].NormalizedPath)
 		dimensions, dimensionErr := imageio.PNGDimensions(manifest.Targets[targetID].NormalizedPath)
 		require.NoError(t, dimensionErr)
-		require.Equal(t, image.Pt(320, 320), dimensions)
+		require.Equal(t, image.Pt(384, 384), dimensions)
 	}
+	for _, animationID := range []string{"walk", "attack"} {
+		board := manifest.Intermediates["animation-board:relic-knight:"+animationID]
+		require.NotNil(t, board.ScaleCalibration)
+		require.Equal(t, imageio.SemanticScaleCalibrationVersion, board.ScaleCalibration.Version)
+		require.Len(t, board.ScaleCalibration.DirectionScales, 3)
+		require.Len(t, board.ScaleCalibration.PoseMeasurements, 12)
+		for _, measurement := range board.ScaleCalibration.PoseMeasurements {
+			require.Positive(t, measurement.ForegroundPixels)
+			require.Positive(t, measurement.SourceWidth)
+			require.Positive(t, measurement.SourceHeight)
+			require.Positive(t, measurement.CanonicalWidth)
+			require.Positive(t, measurement.CanonicalHeight)
+		}
+		require.FileExists(t, board.Artifacts.ScaleCalibrationPath)
+	}
+}
+
+func TestAnimatedUnitPaletteComesOnlyFromCanonicalMaster(t *testing.T) {
+	dir := testkit.WriteFullUnitPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	gen := &recoloringProvider{}
+
+	_, err := generate.Run(context.Background(), all, gen, generate.Options{
+		OutputDir: filepath.Join(dir, p.OutputDir),
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "relic-knight"},
+	})
+
+	require.NoError(t, err)
+	manifest, err := generate.Load(filepath.Join(dir, p.OutputDir), "run")
+	require.NoError(t, err)
+	target := manifest.Targets["relic-knight__walk__direction-down__00"]
+	require.Contains(t, target.Palette, imageio.PaletteColor{R: 200, G: 40, B: 40})
+	require.NotContains(t, target.Palette, imageio.PaletteColor{R: 20, G: 220, B: 20})
 }
 
 func TestAnimationUsesOneOpaqueMasterPrefilledLayoutAndRecordsUnsentMasterEvidence(t *testing.T) {
@@ -219,6 +288,174 @@ func TestCompleteUnitGenerationIsSkippedWithoutResettingReview(t *testing.T) {
 	require.Equal(t, "manual review complete", reloaded.Units["unit:relic-knight"].Review.Reason)
 }
 
+func TestOutdatedAwaitingReviewUnitReassemblesWithoutProviderCalls(t *testing.T) {
+	dir := testkit.WriteFullUnitPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, p.OutputDir)
+	deployDir := filepath.Join(dir, p.DeployDir)
+	_, err := generate.Run(context.Background(), all, &recordingProvider{}, generate.Options{
+		OutputDir: outputDir, DeployDir: deployDir, RunID: "run", Filter: targets.Filter{Object: "relic-knight"},
+	})
+	require.NoError(t, err)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	manifest.Units["unit:relic-knight"].AssemblyVersion = 0
+	manifest.Units["unit:relic-knight"].Profile.Version = 1
+	manifest.Units["unit:relic-knight"].Profile.ReferenceCanvases = nil
+	for _, boardID := range manifest.Units["unit:relic-knight"].AnimationBoardIDs {
+		manifest.Intermediates[boardID].ScaleCalibration = nil
+		manifest.Intermediates[boardID].Artifacts.ScaleCalibrationPath = ""
+	}
+	require.NoError(t, generate.Save(outputDir, "run", manifest))
+
+	resumed := &recordingProvider{}
+	result, err := generate.Run(context.Background(), all, resumed, generate.Options{
+		OutputDir: outputDir, DeployDir: deployDir, RunID: "run", Filter: targets.Filter{Object: "relic-knight"},
+	})
+
+	require.NoError(t, err)
+	require.Empty(t, resumed.requests)
+	require.Zero(t, result.Generated)
+	reloaded, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	require.Equal(t, generate.AnimatedAssemblyVersion, reloaded.Units["unit:relic-knight"].AssemblyVersion)
+	require.Equal(
+		t,
+		imageio.CanonicalSubjectProfileVersion,
+		reloaded.Units["unit:relic-knight"].Profile.Version,
+	)
+	require.Equal(
+		t,
+		[]image.Point{{X: 320, Y: 320}, {X: 320, Y: 320}, {X: 320, Y: 320}},
+		reloaded.Units["unit:relic-knight"].Profile.ReferenceCanvases,
+	)
+	for _, boardID := range reloaded.Units["unit:relic-knight"].AnimationBoardIDs {
+		require.NotNil(t, reloaded.Intermediates[boardID].ScaleCalibration)
+		require.FileExists(t, reloaded.Intermediates[boardID].Artifacts.ScaleCalibrationPath)
+	}
+}
+
+func TestOutdatedAwaitingReviewUnitRejectsIncompleteReferenceLineage(t *testing.T) {
+	dir := testkit.WriteFullUnitPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, p.OutputDir)
+	deployDir := filepath.Join(dir, p.DeployDir)
+	_, err := generate.Run(context.Background(), all, &recordingProvider{}, generate.Options{
+		OutputDir: outputDir, DeployDir: deployDir, RunID: "run", Filter: targets.Filter{Object: "relic-knight"},
+	})
+	require.NoError(t, err)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	unit := manifest.Units["unit:relic-knight"]
+	unit.AssemblyVersion = 0
+	unit.Profile.Version = 1
+	unit.Profile.ReferenceCanvases = nil
+	unit.Profile.ReferenceHashes = unit.Profile.ReferenceHashes[:2]
+	require.NoError(t, generate.Save(outputDir, "run", manifest))
+
+	resumed := &recordingProvider{}
+	result, err := generate.Run(context.Background(), all, resumed, generate.Options{
+		OutputDir: outputDir, DeployDir: deployDir, RunID: "run", Filter: targets.Filter{Object: "relic-knight"},
+	})
+
+	require.NoError(t, err)
+	require.Empty(t, resumed.requests)
+	require.Zero(t, result.Generated)
+	reloaded, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	require.Equal(t, generate.StatusRejected, reloaded.Units["unit:relic-knight"].Status)
+	require.Contains(
+		t,
+		reloaded.Units["unit:relic-knight"].HardRejections,
+		"invalid_canonical_subject_profile: canonical profile reference lineage is incomplete",
+	)
+}
+
+func TestRejectedReassemblyClearsStaleReviewableTargets(t *testing.T) {
+	dir := testkit.WriteFullUnitPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, p.OutputDir)
+	deployDir := filepath.Join(dir, p.DeployDir)
+	_, err := generate.Run(context.Background(), all, &recordingProvider{}, generate.Options{
+		OutputDir: outputDir, DeployDir: deployDir, RunID: "run", Filter: targets.Filter{Object: "relic-knight"},
+	})
+	require.NoError(t, err)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	unit := manifest.Units["unit:relic-knight"]
+	unit.AssemblyVersion = 0
+	attack := manifest.Intermediates["animation-board:relic-knight:attack"]
+	attack.Poses[0].Bounds = image.Rect(-400, -200, 400, 0)
+	attack.Poses[0].Pivot = image.Point{}
+	require.NoError(t, generate.Save(outputDir, "run", manifest))
+
+	resumed := &recordingProvider{}
+	_, err = generate.Run(context.Background(), all, resumed, generate.Options{
+		OutputDir: outputDir, DeployDir: deployDir, RunID: "run", Filter: targets.Filter{Object: "relic-knight"},
+	})
+
+	require.NoError(t, err)
+	require.Empty(t, resumed.requests)
+	reloaded, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	require.Equal(t, generate.StatusRejected, reloaded.Units["unit:relic-knight"].Status)
+	require.NotEmpty(t, reloaded.Units["unit:relic-knight"].HardRejections)
+	require.Contains(
+		t,
+		reloaded.Units["unit:relic-knight"].HardRejections[0],
+		"unsafe_canonical_pose_extent",
+	)
+	require.Empty(t, reloaded.Units["unit:relic-knight"].Artifacts.CompleteUnitSheetPath)
+	for _, targetID := range reloaded.Units["unit:relic-knight"].TargetIDs {
+		target := reloaded.Targets[targetID]
+		require.Equal(t, generate.StatusRejected, target.Status)
+		require.Empty(t, target.NormalizedPath)
+		require.False(t, target.ProductionEligible)
+		require.NotEmpty(t, target.HardRejections)
+	}
+}
+
+func TestIndependentAnimationBoardScaleIsCalibratedToMaster(t *testing.T) {
+	dir := testkit.WriteFullUnitPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, p.OutputDir)
+	gen := &smallerAnimationProvider{}
+
+	_, err := generate.Run(context.Background(), all, gen, generate.Options{
+		OutputDir: outputDir,
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "relic-knight"},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, gen.requests, 3)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	board := manifest.Intermediates["animation-board:relic-knight:walk"]
+	require.NotNil(t, board.ScaleCalibration)
+	for _, ratio := range board.ScaleCalibration.SourceRatios {
+		require.Greater(t, ratio, 1.5)
+	}
+	masterBounds, err := imageio.ForegroundBounds(filepath.Join(
+		outputDir,
+		"runs",
+		"run",
+		"units",
+		"relic-knight",
+		"review",
+		"master-directions",
+		"down.png",
+	))
+	require.NoError(t, err)
+	frameBounds, err := imageio.ForegroundBounds(
+		manifest.Targets["relic-knight__walk__direction-down__00"].NormalizedPath,
+	)
+	require.NoError(t, err)
+	require.InDelta(t, masterBounds.Dx(), frameBounds.Dx(), 1)
+	require.InDelta(t, masterBounds.Dy(), frameBounds.Dy(), 1)
+}
+
 func TestAnimationSelectionFailsBeforeProvider(t *testing.T) {
 	dir := testkit.WriteFullUnitPack(t)
 	p, all := testkit.LoadTargets(t, dir)
@@ -231,7 +468,7 @@ func TestAnimationSelectionFailsBeforeProvider(t *testing.T) {
 		Filter:    targets.Filter{Object: "relic-knight", Animation: "walk"},
 	})
 
-	require.ErrorContains(t, err, "complete-unit only in V9")
+	require.ErrorContains(t, err, "complete-unit only in V10")
 	require.Empty(t, gen.requests)
 }
 
@@ -248,7 +485,7 @@ func TestForceFailsForAnimatedUnitBeforeProvider(t *testing.T) {
 		Force:     true,
 	})
 
-	require.ErrorContains(t, err, "complete-unit only in V9")
+	require.ErrorContains(t, err, "complete-unit only in V10")
 	require.Empty(t, gen.requests)
 }
 
@@ -374,7 +611,7 @@ func TestRejectedRunIsImmutableWithoutAnotherProviderCall(t *testing.T) {
 		OutputDir: outputDir, DeployDir: deployDir, RunID: "run", Filter: targets.Filter{Object: "relic-knight"},
 	})
 
-	require.ErrorContains(t, err, "rejected animated runs are immutable in V9")
+	require.ErrorContains(t, err, "rejected animated runs are immutable in V10")
 	require.Empty(t, resumed.requests)
 }
 
@@ -387,7 +624,7 @@ func TestManifestV7IsUnsupported(t *testing.T) {
 	_, err := generate.Load(outputDir, "old")
 
 	require.ErrorContains(t, err, "unsupported manifest v7")
-	require.ErrorContains(t, err, "manifest v9")
+	require.ErrorContains(t, err, "manifest v10")
 }
 
 type recordingProvider struct {
@@ -407,8 +644,99 @@ func (p *recordingProvider) Generate(ctx context.Context, request provider.Reque
 	return (provider.Fake{}).Generate(ctx, request)
 }
 
+type recoloringProvider struct {
+	requests []provider.Request
+}
+
+func (p *recoloringProvider) Capabilities() provider.Capabilities {
+	return provider.Capabilities{References: true, Masks: true}
+}
+
+func (p *recoloringProvider) Generate(
+	ctx context.Context,
+	request provider.Request,
+) (provider.Result, error) {
+	p.requests = append(p.requests, request)
+	result, err := (provider.Fake{}).Generate(ctx, request)
+	if err != nil {
+		return provider.Result{}, err
+	}
+	decoded, err := png.Decode(bytes.NewReader(result.PNG))
+	if err != nil {
+		return provider.Result{}, err
+	}
+	board := image.NewNRGBA(decoded.Bounds())
+	background := color.NRGBAModel.Convert(decoded.At(
+		decoded.Bounds().Min.X,
+		decoded.Bounds().Min.Y,
+	)).(color.NRGBA)
+	foreground := color.NRGBA{R: 20, G: 220, B: 20, A: 255}
+	if len(p.requests) == 1 {
+		foreground = color.NRGBA{R: 200, G: 40, B: 40, A: 255}
+	}
+	for y := decoded.Bounds().Min.Y; y < decoded.Bounds().Max.Y; y++ {
+		for x := decoded.Bounds().Min.X; x < decoded.Bounds().Max.X; x++ {
+			value := color.NRGBAModel.Convert(decoded.At(x, y)).(color.NRGBA)
+			if value == background {
+				board.SetNRGBA(x, y, background)
+				continue
+			}
+			board.SetNRGBA(x, y, foreground)
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, board); err != nil {
+		return provider.Result{}, err
+	}
+	return provider.Result{PNG: encoded.Bytes(), Metadata: result.Metadata}, nil
+}
+
 type overflowingMasterProvider struct {
 	requests []provider.Request
+}
+
+type smallerAnimationProvider struct {
+	requests []provider.Request
+}
+
+func (p *smallerAnimationProvider) Capabilities() provider.Capabilities {
+	return provider.Capabilities{References: true, Masks: true}
+}
+
+func (p *smallerAnimationProvider) Generate(
+	ctx context.Context,
+	request provider.Request,
+) (provider.Result, error) {
+	p.requests = append(p.requests, request)
+	if len(p.requests) == 1 {
+		return (provider.Fake{}).Generate(ctx, request)
+	}
+	layout, err := imageio.SemanticAnimationLayout(3, 4)
+	if err != nil {
+		return provider.Result{}, err
+	}
+	board := image.NewNRGBA(image.Rect(0, 0, request.Size.X, request.Size.Y))
+	background := color.NRGBA{R: 255, B: 255, A: 255}
+	fillTestRect(board, board.Bounds(), background)
+	foreground := color.NRGBA{R: 120, G: 80, B: 180, A: 255}
+	for _, anchor := range layout.Anchors {
+		bottom := anchor.Y + 106
+		fillTestRect(
+			board,
+			image.Rect(anchor.X-60, bottom-120, anchor.X+60, bottom),
+			foreground,
+		)
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, board); err != nil {
+		return provider.Result{}, err
+	}
+	return provider.Result{
+		PNG: encoded.Bytes(),
+		Metadata: map[string]string{
+			"provider": "smaller-animation-test",
+		},
+	}, nil
 }
 
 func (p *overflowingMasterProvider) Capabilities() provider.Capabilities {

@@ -102,7 +102,7 @@ func TestWrongSizedNormalizedFrameBlocksWholeUnit(t *testing.T) {
 	require.Empty(t, plan.Replace)
 	require.Len(t, plan.Unchanged, 24)
 	require.Contains(t, plan.Unchanged[0].Reason, "normalized source dimensions")
-	require.Contains(t, plan.Unchanged[0].Reason, image.Pt(320, 320).String())
+	require.Contains(t, plan.Unchanged[0].Reason, image.Pt(384, 384).String())
 }
 
 func TestStaleProductionHashBlocksWholeUnit(t *testing.T) {
