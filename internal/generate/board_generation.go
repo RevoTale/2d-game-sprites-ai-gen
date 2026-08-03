@@ -37,15 +37,16 @@ func generateBoardCandidate(
 	if err := os.MkdirAll(attemptDir, 0o755); err != nil {
 		return err
 	}
+	hydrated, err := hydrateInputHashes(inputs)
+	if err != nil {
+		return err
+	}
+	prompt = renderProviderPrompt(prompt, hydrated)
 	promptPath := filepath.Join(dir, "prompt.md")
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
 		return err
 	}
 	state.Artifacts.PromptPath = promptPath
-	hydrated, err := hydrateInputHashes(inputs)
-	if err != nil {
-		return err
-	}
 	attempt.References, err = collectReferenceEvidence(hydrated, reviewOnly)
 	if err != nil {
 		return err

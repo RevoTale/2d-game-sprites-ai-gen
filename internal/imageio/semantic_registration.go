@@ -22,6 +22,31 @@ type SemanticPoseSet struct {
 	DirectionScales  []float64
 }
 
+// PrepareSemanticPosesForSharedBodyAnchor retains every detected grounded
+// body pivot so normalization maps it to the direction's shared output anchor.
+// Provider placement inside a logical board slot is layout drift, not motion;
+// action extent remains intact because complete pose bounds are preserved.
+func PrepareSemanticPosesForSharedBodyAnchor(
+	poses []SemanticPose,
+	framesPerDirection int,
+) ([]SemanticPose, []image.Point, error) {
+	if len(poses) == 0 || framesPerDirection <= 0 ||
+		len(poses)%framesPerDirection != 0 {
+		return nil, nil, fmt.Errorf(
+			"frame-zero registration requires complete direction rows",
+		)
+	}
+	registered := append([]SemanticPose(nil), poses...)
+	directionCount := len(poses) / framesPerDirection
+	offsets := make([]image.Point, directionCount)
+	for directionIndex := range directionCount {
+		start := directionIndex * framesPerDirection
+		calibration := poses[start]
+		offsets[directionIndex] = calibration.Pivot.Sub(calibration.Anchor)
+	}
+	return registered, offsets, nil
+}
+
 // ConstrainSemanticUnitAnchors minimally shifts each preferred neutral-view
 // anchor into the interval where every complete pose of that direction fits.
 // The reference-derived scale and the one-anchor-per-direction invariant remain

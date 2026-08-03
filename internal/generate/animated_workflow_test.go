@@ -16,6 +16,7 @@ import (
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/conditioning"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/generate"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/imageio"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/provider"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/testkit"
@@ -43,17 +44,17 @@ func TestRunIDMustBeOneSafePathComponent(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(outputDir, "..", "escape", "manifest.json"))
 }
 
-func TestLoadRejectsV9RunWithoutModifyingIt(t *testing.T) {
+func TestLoadRejectsLegacyVersion10RunWithoutModifyingIt(t *testing.T) {
 	outputDir := t.TempDir()
 	path := generate.ManifestPath(outputDir, "old-run")
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-	original := []byte("{\n  \"version\": 9,\n  \"runId\": \"old-run\"\n}\n")
+	original := []byte("{\n  \"version\": 10,\n  \"runId\": \"old-run\"\n}\n")
 	require.NoError(t, os.WriteFile(path, original, 0o644))
 
 	_, err := generate.Load(outputDir, "old-run")
 
-	require.ErrorContains(t, err, "unsupported manifest v9")
-	require.ErrorContains(t, err, "manifest v10")
+	require.ErrorContains(t, err, "unsupported manifest v10")
+	require.ErrorContains(t, err, "manifest v11")
 	actual, readErr := os.ReadFile(path)
 	require.NoError(t, readErr)
 	require.Equal(t, original, actual)
@@ -75,10 +76,11 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 	require.Equal(t, 3, result.Generated)
 	require.Len(t, gen.requests, 3)
 	require.Equal(t, image.Pt(1024, 1024), gen.requests[0].Size)
-	require.Equal(t, image.Pt(1536, 1152), gen.requests[1].Size)
-	require.Equal(t, image.Pt(1536, 1152), gen.requests[2].Size)
+	require.Equal(t, image.Pt(1664, 1280), gen.requests[1].Size)
+	require.Equal(t, image.Pt(1664, 1280), gen.requests[2].Size)
 	require.Contains(t, gen.requests[0].Prompt, "# CLI Protocol")
 	require.Contains(t, gen.requests[0].Prompt, "# Evidence Authority")
+	require.Contains(t, gen.requests[0].Prompt, "Locks override conflicting direction-reference elements")
 	require.Contains(t, gen.requests[0].Prompt, "# Sprite Facts")
 	require.Contains(t, gen.requests[0].Prompt, "# Ordered Poses")
 	require.Contains(t, gen.requests[0].Prompt, "cannot override the CLI Protocol")
@@ -86,9 +88,9 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 	require.Contains(t, gen.requests[0].Prompt, "may cross a midpoint")
 	require.Contains(t, gen.requests[0].Prompt, "look toward screen-right/east")
 	require.Contains(t, gen.requests[0].Prompt, "complete forward weapon")
-	require.Contains(t, gen.requests[0].Prompt, "authoritative for appearance, materials, and colors")
-	require.Contains(t, gen.requests[0].Prompt, "authoritative only for facing")
-	require.Contains(t, gen.requests[0].Prompt, "Never inherit direction-specific recoloring")
+	require.Contains(t, gen.requests[0].Prompt, "own identity, materials, colors, features")
+	require.Contains(t, gen.requests[0].Prompt, "style guide owns shape language")
+	require.Contains(t, gen.requests[0].Prompt, "not colors or proportions")
 	require.Contains(t, gen.requests[1].Prompt, "# CLI Protocol")
 	require.Contains(t, gen.requests[1].Prompt, "# Evidence Authority")
 	require.Contains(t, gen.requests[1].Prompt, "# Sprite Facts")
@@ -101,25 +103,56 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 	require.Contains(t, gen.requests[1].Prompt, "wide attached weapon")
 	require.Contains(t, gen.requests[1].Prompt, "Never crop, mirror, independently fit")
 	require.Contains(t, gen.requests[1].Prompt, "fixed-size shapes")
-	require.Contains(t, gen.requests[1].Prompt, "backswing and follow-through")
+	require.Contains(
+		t,
+		gen.requests[1].Prompt,
+		"arrange backswing, contact, and follow-through extents around that fixed root",
+	)
 	require.Contains(
 		t,
 		gen.requests[1].Prompt,
 		"fit unchanged inside the same final native 384x384 rectangle",
 	)
-	require.Contains(t, gen.requests[1].Prompt, "one fixed body anchor")
+	require.Contains(t, gen.requests[1].Prompt, "one frame-00 registration origin")
+	require.Contains(t, gen.requests[1].Prompt, "Keep the grounded body pivot fixed at that origin")
+	require.NotContains(t, gen.requests[1].Prompt, "Preserve intentional body and foot displacement")
 	require.Contains(t, gen.requests[1].Prompt, "Stage wide motion diagonally or in depth")
 	require.Contains(t, gen.requests[1].Prompt, "Never solve fit by shortening equipment")
 	require.Contains(t, gen.requests[2].Prompt, "one compact arc inside the shared final-frame rectangle")
+	require.Contains(t, gen.requests[2].Prompt, "Down/front projection")
+	require.Contains(t, gen.requests[2].Prompt, "toward the screen-bottom foreground")
+	require.Contains(t, gen.requests[2].Prompt, "Up/back projection")
+	require.Contains(t, gen.requests[2].Prompt, "toward screen-top depth")
+	require.Contains(t, gen.requests[2].Prompt, "Right/side projection")
+	require.Contains(t, gen.requests[2].Prompt, "toward screen-right")
+	require.Contains(t, gen.requests[2].Prompt, "never a straight screen-horizontal maximum-width pose")
+	require.Contains(t, gen.requests[2].Prompt, "A slash remains an angled arc")
+	require.Contains(t, gen.requests[2].Prompt, "a thrust uses depth foreshortening")
+	require.Contains(t, gen.requests[2].Prompt, "Screen-horizontal width is not attack strength")
 	require.Contains(t, gen.requests[1].Prompt, "including behind a backswing")
 	require.Contains(t, gen.requests[1].Prompt, "Preserve exact material colors, saturation, and contrast")
+	require.Contains(
+		t,
+		gen.requests[1].Prompt,
+		"No floating sparks, motes, embers, droplets, aura fragments, or isolated glow pixels",
+	)
+	require.Contains(
+		t,
+		gen.requests[1].Prompt,
+		"Every visible magic highlight must stay physically connected to the unit body or attached equipment",
+	)
+	require.Contains(
+		t,
+		gen.requests[1].Prompt,
+		"Never paint bloom, halo, aura, soft light, semi-transparent glow, or colored lighting into the chroma background",
+	)
+	require.Contains(
+		t,
+		gen.requests[1].Prompt,
+		"Show magic brightness only with opaque hard-edged connected pixel clusters",
+	)
 	require.Less(t, len(gen.requests[0].Prompt), 3_000)
 	require.Less(t, len(gen.requests[1].Prompt), 4_500)
-	for _, request := range gen.requests {
-		for _, input := range request.Inputs {
-			require.NotEqual(t, conditioning.RoleMask, input.Role)
-		}
-	}
 	directionInputs := 0
 	for _, input := range gen.requests[0].Inputs {
 		if !strings.HasPrefix(input.ID, "direction-reference-") {
@@ -133,6 +166,10 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 
 	manifest, err := generate.Load(filepath.Join(dir, p.OutputDir), "run")
 	require.NoError(t, err)
+	recordedPrompt, err := os.ReadFile(manifest.Intermediates["character-master:relic-knight"].Artifacts.PromptPath)
+	require.NoError(t, err)
+	require.Equal(t, gen.requests[0].Prompt, string(recordedPrompt))
+	require.Contains(t, gen.requests[0].Prompt, "# Image References")
 	require.Equal(t, generate.StatusReady, manifest.Intermediates["character-master:relic-knight"].Status)
 	require.Equal(t, generate.StatusReady, manifest.Intermediates["animation-board:relic-knight:walk"].Status)
 	require.Equal(t, generate.StatusReady, manifest.Intermediates["animation-board:relic-knight:attack"].Status)
@@ -143,6 +180,11 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 	require.Len(t, manifest.Units["unit:relic-knight"].Transform.DirectionAnchors, 3)
 	require.FileExists(t, manifest.Units["unit:relic-knight"].Artifacts.CanonicalProfilePath)
 	require.FileExists(t, manifest.Units["unit:relic-knight"].Artifacts.CanonicalProfileOverlayPath)
+	require.FileExists(t, manifest.Units["unit:relic-knight"].Artifacts.NativePreviewPath)
+	require.FileExists(t, manifest.Units["unit:relic-knight"].Artifacts.PortraitPreviewPath)
+	portraitSize, err := imageio.PNGDimensions(manifest.Units["unit:relic-knight"].Artifacts.PortraitPreviewPath)
+	require.NoError(t, err)
+	require.Equal(t, image.Pt(96, 96), portraitSize)
 	comparisonSize, err := imageio.PNGDimensions(manifest.Units["unit:relic-knight"].Artifacts.IdentityComparisonPath)
 	require.NoError(t, err)
 	require.Equal(t, image.Pt(3568, 1192), comparisonSize)
@@ -166,6 +208,7 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 		require.NotNil(t, board.ScaleCalibration)
 		require.Equal(t, imageio.SemanticScaleCalibrationVersion, board.ScaleCalibration.Version)
 		require.Len(t, board.ScaleCalibration.DirectionScales, 3)
+		require.Len(t, board.ScaleCalibration.DirectionPivotOffsets, 3)
 		require.Len(t, board.ScaleCalibration.PoseMeasurements, 12)
 		for _, measurement := range board.ScaleCalibration.PoseMeasurements {
 			require.Positive(t, measurement.ForegroundPixels)
@@ -326,7 +369,7 @@ func TestOutdatedAwaitingReviewUnitReassemblesWithoutProviderCalls(t *testing.T)
 	)
 	require.Equal(
 		t,
-		[]image.Point{{X: 320, Y: 320}, {X: 320, Y: 320}, {X: 320, Y: 320}},
+		[]image.Point{{X: 384, Y: 384}, {X: 384, Y: 384}, {X: 384, Y: 384}},
 		reloaded.Units["unit:relic-knight"].Profile.ReferenceCanvases,
 	)
 	for _, boardID := range reloaded.Units["unit:relic-knight"].AnimationBoardIDs {
@@ -456,39 +499,6 @@ func TestIndependentAnimationBoardScaleIsCalibratedToMaster(t *testing.T) {
 	require.InDelta(t, masterBounds.Dy(), frameBounds.Dy(), 1)
 }
 
-func TestAnimationSelectionFailsBeforeProvider(t *testing.T) {
-	dir := testkit.WriteFullUnitPack(t)
-	p, all := testkit.LoadTargets(t, dir)
-	gen := &recordingProvider{}
-
-	_, err := generate.Run(context.Background(), all, gen, generate.Options{
-		OutputDir: filepath.Join(dir, p.OutputDir),
-		DeployDir: filepath.Join(dir, p.DeployDir),
-		RunID:     "run",
-		Filter:    targets.Filter{Object: "relic-knight", Animation: "walk"},
-	})
-
-	require.ErrorContains(t, err, "complete-unit only in V10")
-	require.Empty(t, gen.requests)
-}
-
-func TestForceFailsForAnimatedUnitBeforeProvider(t *testing.T) {
-	dir := testkit.WriteFullUnitPack(t)
-	p, all := testkit.LoadTargets(t, dir)
-	gen := &recordingProvider{}
-
-	_, err := generate.Run(context.Background(), all, gen, generate.Options{
-		OutputDir: filepath.Join(dir, p.OutputDir),
-		DeployDir: filepath.Join(dir, p.DeployDir),
-		RunID:     "run",
-		Filter:    targets.Filter{Object: "relic-knight"},
-		Force:     true,
-	})
-
-	require.ErrorContains(t, err, "complete-unit only in V10")
-	require.Empty(t, gen.requests)
-}
-
 func TestInterruptedGenerationResumesWithoutDuplicatingCompletedCalls(t *testing.T) {
 	dir := testkit.WriteFullUnitPack(t)
 	p, all := testkit.LoadTargets(t, dir)
@@ -501,6 +511,16 @@ func TestInterruptedGenerationResumesWithoutDuplicatingCompletedCalls(t *testing
 	})
 	require.Error(t, err)
 	require.Len(t, first.requests, 3)
+	interrupted, loadErr := generate.Load(outputDir, "run")
+	require.NoError(t, loadErr)
+	require.Equal(
+		t,
+		1,
+		generate.ProviderCallsRemaining(
+			interrupted,
+			targets.FilterTargets(all, targets.Filter{Object: "relic-knight"}),
+		),
+	)
 
 	resumed := &recordingProvider{}
 	_, err = generate.Run(context.Background(), all, resumed, generate.Options{
@@ -611,7 +631,7 @@ func TestRejectedRunIsImmutableWithoutAnotherProviderCall(t *testing.T) {
 		OutputDir: outputDir, DeployDir: deployDir, RunID: "run", Filter: targets.Filter{Object: "relic-knight"},
 	})
 
-	require.ErrorContains(t, err, "rejected animated runs are immutable in V10")
+	require.ErrorContains(t, err, "rejected animated runs are immutable in V13")
 	require.Empty(t, resumed.requests)
 }
 
@@ -624,7 +644,180 @@ func TestManifestV7IsUnsupported(t *testing.T) {
 	_, err := generate.Load(outputDir, "old")
 
 	require.ErrorContains(t, err, "unsupported manifest v7")
-	require.ErrorContains(t, err, "manifest v10")
+	require.ErrorContains(t, err, "manifest v11")
+}
+
+func TestBatchGenerationRecordsOneFailureAndContinuesUnrelatedObjects(t *testing.T) {
+	dir := testkit.WriteFullUnitPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, pack.OutputDir(p))
+	deployDir := filepath.Join(dir, p.DeployDir)
+	gen := &recordingProvider{failAt: 1}
+
+	result, err := generate.Run(context.Background(), all, gen, generate.Options{
+		OutputDir:       outputDir,
+		DeployDir:       deployDir,
+		RunID:           "batch",
+		ContinueOnError: true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Failed)
+	require.Len(t, gen.requests, 4)
+	manifest, err := generate.Load(outputDir, "batch")
+	require.NoError(t, err)
+	require.Len(t, manifest.Failures, 1)
+	require.Equal(t, "grass", manifest.Failures[0].ObjectID)
+	require.True(t, manifest.Failures[0].Ambiguous)
+	require.Equal(t, generate.StatusAwaitingReview, manifest.Units["unit:relic-knight"].Status)
+}
+
+func TestStaticGenerationSendsOnlyConfiguredJSONEvidence(t *testing.T) {
+	dir := testkit.WritePack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	for index := range all {
+		if all[index].ObjectID == "grass" {
+			all[index].RenderMode = pack.RenderModeOpaqueTile
+		}
+	}
+	productionPath := filepath.Join(dir, p.DeployDir, "terrain", "grass.png")
+	require.NoError(t, os.MkdirAll(filepath.Dir(productionPath), 0o755))
+	require.NoError(t, os.WriteFile(productionPath, testkit.PNG(t, 16, 16), 0o644))
+	gen := &recordingProvider{}
+
+	_, err := generate.Run(context.Background(), all, gen, generate.Options{
+		OutputDir: filepath.Join(dir, p.OutputDir),
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "grass"},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, gen.requests, 1)
+	require.Len(t, gen.requests[0].Inputs, 1)
+	require.Equal(t, conditioning.RoleStyle, gen.requests[0].Inputs[0].Role)
+	require.NotEqual(t, productionPath, gen.requests[0].Inputs[0].Path)
+	manifest, err := generate.Load(filepath.Join(dir, p.OutputDir), "run")
+	require.NoError(t, err)
+	state := manifest.Targets["grass"]
+	require.NotNil(t, state)
+	require.NotEmpty(t, state.Artifacts.TiledPreviewPath)
+	require.FileExists(t, state.Artifacts.TiledPreviewPath)
+}
+
+func TestIsolatedStaticGenerationRejectsUnremovableFullCanvasBackdrop(t *testing.T) {
+	dir := testkit.WritePack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, p.OutputDir)
+
+	_, err := generate.Run(context.Background(), all, corruptBackdropProvider{}, generate.Options{
+		OutputDir: outputDir,
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "grass"},
+	})
+
+	require.NoError(t, err)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	state := manifest.Targets["grass"]
+	require.Equal(t, generate.StatusRejected, state.Status)
+	require.Contains(t, state.HardRejections, "foreground_is_nonremovable_backdrop")
+	require.False(t, state.ProductionEligible)
+}
+
+func TestStyleGuideSendsOnlyDeclaredBootstrapInputs(t *testing.T) {
+	dir := testkit.WritePack(t)
+	p, err := pack.Load(dir)
+	require.NoError(t, err)
+	target := targets.StyleGuideTarget(p)
+	for index := range target.Inputs {
+		target.Inputs[index].Path = filepath.Join(dir, target.Inputs[index].Path)
+		target.Inputs[index].SourcePath = filepath.Join(dir, target.Inputs[index].SourcePath)
+	}
+	deployedGuide := filepath.Join(dir, p.StyleGuide.Deploy.Path)
+	gen := &recordingProvider{}
+
+	_, err = generate.Run(context.Background(), []targets.Target{target}, gen, generate.Options{
+		OutputDir: filepath.Join(dir, p.OutputDir),
+		DeployDir: dir,
+		RunID:     "guide",
+		Filter:    targets.Filter{Object: targets.StyleGuideTargetID},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, gen.requests, 1)
+	require.Len(t, gen.requests[0].Inputs, len(p.StyleGuide.Inputs))
+	for _, input := range gen.requests[0].Inputs {
+		require.NotEqual(t, deployedGuide, input.Path)
+	}
+}
+
+func TestStyleGuideReprocessesStaleNormalizationWithoutProviderCall(t *testing.T) {
+	dir := testkit.WritePack(t)
+	p, err := pack.Load(dir)
+	require.NoError(t, err)
+	target := targets.StyleGuideTarget(p)
+	for index := range target.Inputs {
+		target.Inputs[index].Path = filepath.Join(dir, target.Inputs[index].Path)
+		target.Inputs[index].SourcePath = filepath.Join(
+			dir,
+			target.Inputs[index].SourcePath,
+		)
+	}
+	outputDir := filepath.Join(dir, p.OutputDir)
+	options := generate.Options{
+		OutputDir: outputDir,
+		DeployDir: dir,
+		RunID:     "guide",
+		Filter:    targets.Filter{Object: targets.StyleGuideTargetID},
+	}
+	initialProvider := &recordingProvider{}
+	_, err = generate.Run(
+		context.Background(),
+		[]targets.Target{target},
+		initialProvider,
+		options,
+	)
+	require.NoError(t, err)
+	require.Len(t, initialProvider.requests, 1)
+
+	manifest, err := generate.Load(outputDir, "guide")
+	require.NoError(t, err)
+	state := manifest.Targets[targets.StyleGuideTargetID]
+	require.NotEmpty(t, state.Attempts)
+	require.NotEmpty(t, state.Attempts[0].Candidates)
+	state.Attempts[0].Candidates[0].QualityVersion = 0
+	require.NoError(t, generate.Save(outputDir, "guide", manifest))
+
+	reprocessProvider := &recordingProvider{}
+	_, err = generate.Run(
+		context.Background(),
+		[]targets.Target{target},
+		reprocessProvider,
+		options,
+	)
+
+	require.NoError(t, err)
+	require.Empty(t, reprocessProvider.requests)
+	reprocessed, err := generate.Load(outputDir, "guide")
+	require.NoError(t, err)
+	reprocessedState := reprocessed.Targets[targets.StyleGuideTargetID]
+	require.Equal(
+		t,
+		imageio.CompositePaletteSize,
+		reprocessedState.Normalization.MaximumColors,
+	)
+	require.Equal(
+		t,
+		"deterministic-composite-median-cut",
+		reprocessedState.Normalization.PaletteMethod,
+	)
+	require.Greater(
+		t,
+		reprocessedState.Attempts[0].Candidates[0].QualityVersion,
+		0,
+	)
 }
 
 type recordingProvider struct {
@@ -632,8 +825,33 @@ type recordingProvider struct {
 	failAt   int
 }
 
+type corruptBackdropProvider struct{}
+
+func (corruptBackdropProvider) Capabilities() provider.Capabilities {
+	return provider.Capabilities{References: true}
+}
+
+func (corruptBackdropProvider) Generate(_ context.Context, request provider.Request) (provider.Result, error) {
+	img := image.NewNRGBA(image.Rect(0, 0, request.Size.X, request.Size.Y))
+	for y := 0; y < request.Size.Y; y++ {
+		for x := 0; x < request.Size.X; x++ {
+			img.SetNRGBA(x, y, color.NRGBA{
+				R: uint8((x*17 + y*3) % 256),
+				G: uint8((x*5 + y*19) % 256),
+				B: uint8((x*11 + y*7) % 256),
+				A: 255,
+			})
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, img); err != nil {
+		return provider.Result{}, err
+	}
+	return provider.Result{PNG: encoded.Bytes()}, nil
+}
+
 func (p *recordingProvider) Capabilities() provider.Capabilities {
-	return provider.Capabilities{References: true, Masks: true}
+	return provider.Capabilities{References: true}
 }
 
 func (p *recordingProvider) Generate(ctx context.Context, request provider.Request) (provider.Result, error) {
@@ -649,7 +867,7 @@ type recoloringProvider struct {
 }
 
 func (p *recoloringProvider) Capabilities() provider.Capabilities {
-	return provider.Capabilities{References: true, Masks: true}
+	return provider.Capabilities{References: true}
 }
 
 func (p *recoloringProvider) Generate(
@@ -700,7 +918,7 @@ type smallerAnimationProvider struct {
 }
 
 func (p *smallerAnimationProvider) Capabilities() provider.Capabilities {
-	return provider.Capabilities{References: true, Masks: true}
+	return provider.Capabilities{References: true}
 }
 
 func (p *smallerAnimationProvider) Generate(
@@ -740,7 +958,7 @@ func (p *smallerAnimationProvider) Generate(
 }
 
 func (p *overflowingMasterProvider) Capabilities() provider.Capabilities {
-	return provider.Capabilities{References: true, Masks: true}
+	return provider.Capabilities{References: true}
 }
 
 func (p *overflowingMasterProvider) Generate(ctx context.Context, request provider.Request) (provider.Result, error) {

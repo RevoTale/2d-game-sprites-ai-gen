@@ -1,7 +1,6 @@
 package targets_test
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,94 +10,75 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestExpandTargetsCombinesVariantsAnimationsAndFrames(t *testing.T) {
+func TestExpandV5CreatesConfiguredDirectionsAnimationsFramesAndStatics(t *testing.T) {
 	dir := testkit.WritePack(t)
 	_, all := testkit.LoadTargets(t, dir)
 
-	ids := targetIDs(all)
-	require.Contains(t, ids, "blood-duelist__attack__direction-right__00")
-	require.Contains(t, ids, "blood-duelist__attack__direction-right__contact")
-	require.Contains(t, ids, "blood-duelist__attack__direction-up__00")
-	require.Contains(t, ids, "grass")
+	require.Equal(t, []string{
+		"blood-duelist__attack__direction-down__00",
+		"blood-duelist__attack__direction-down__contact",
+		"blood-duelist__attack__direction-up__00",
+		"blood-duelist__attack__direction-up__contact",
+		"blood-duelist__attack__direction-right__00",
+		"blood-duelist__attack__direction-right__contact",
+		"grass",
+	}, targetIDs(all))
 }
 
-func TestExpandRecordsAnimationAndFrameOrderForConsistencyPlanning(t *testing.T) {
+func TestExpandV5BuildsPromptOnlyFromJSONStyleAndObjectFacts(t *testing.T) {
 	dir := testkit.WritePack(t)
 	_, all := testkit.LoadTargets(t, dir)
+	var target targets.Target
+	for _, candidate := range targets.FilterTargets(all, targets.Filter{Object: "blood-duelist"}) {
+		if candidate.AnimationID == "attack" && candidate.DirectionID == "right" {
+			target = candidate
+			break
+		}
+	}
 
-	selected := targets.FilterTargets(all, targets.Filter{
-		Object:    "blood-duelist",
-		Variants:  map[string]string{"direction": "right"},
-		Animation: "attack",
-	})
-
-	require.Len(t, selected, 2)
-	require.Equal(t, 0, selected[0].AnimationIndex)
-	require.Equal(t, 0, selected[0].FrameIndex)
-	require.Equal(t, 1, selected[1].FrameIndex)
-	require.Contains(t, selected[0].Prompt, "Elegant demonic duelist")
-	require.Contains(t, selected[0].Prompt, "Attack motion")
+	require.Contains(t, target.Prompt, "# Style: compact-dark-fantasy-tactics")
+	require.Contains(t, target.Prompt, "# Unit archetype: agile-armored-humanoid")
+	require.Contains(t, target.Prompt, "Elegant demonic duelist")
+	require.Contains(t, target.Prompt, "# Direction: right")
+	require.Contains(t, target.Prompt, "# Animation: attack")
+	require.NotContains(t, target.Prompt, "# Theme")
 }
 
-func TestExpandInfersConditioningRolesWithoutChangingPackSchema(t *testing.T) {
+func TestExpandV5SendsApprovedGuideThenObjectIdentityForMasterAuthority(t *testing.T) {
 	dir := testkit.WritePackWithReferences(t)
 	_, all := testkit.LoadTargets(t, dir)
-	target := targets.FilterTargets(all, targets.Filter{Object: "blood-duelist", Animation: "attack", Frame: "contact", Variants: map[string]string{"direction": "right"}})[0]
+	target := targets.FilterTargets(all, targets.Filter{Object: "blood-duelist"})[0]
 
 	require.Equal(t, []conditioning.Role{
 		conditioning.RoleStyle,
 		conditioning.RoleIdentity,
-		conditioning.RolePose,
-		conditioning.RolePose,
-		conditioning.RolePose,
 	}, inputRoles(target.Inputs))
+	require.Equal(t, "compact-dark-fantasy-style-v1", target.Inputs[0].ID)
+	require.Equal(t, "identity", target.Inputs[1].ID)
 }
 
-func TestDeployPathResolvesExistingTargetTemplateSafely(t *testing.T) {
+func TestDeployPathResolvesDirectionPlaceholderSafely(t *testing.T) {
 	path, err := targets.DeployPath("/tmp/deploy", targets.Target{
 		ID:             "knight__walk__direction-right__00",
 		ObjectID:       "knight",
 		AnimationID:    "walk",
 		FrameID:        "00",
-		Variants:       []targets.VariantSelection{{AxisID: "direction", ValueID: "right"}},
-		DeployTemplate: "frames/{object}/{animation}/{variant.direction}/{frame}.png",
+		DirectionID:    "right",
+		DeployTemplate: "frames/{object}/{animation}/{direction}/{frame}.png",
 	})
 
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join("/tmp/deploy", "frames/knight/walk/right/00.png"), path)
 }
 
-func TestFilterTargetsSelectsVariantAnimationAndFrame(t *testing.T) {
+func TestSelectAppliesBatchExclusionsBeforePlanning(t *testing.T) {
 	dir := testkit.WritePack(t)
 	_, all := testkit.LoadTargets(t, dir)
 
-	selected := targets.FilterTargets(all, targets.Filter{
-		Object:    "blood-duelist",
-		Variants:  map[string]string{"direction": "right"},
-		Animation: "attack",
-		Frame:     "contact",
-	})
-
-	require.Len(t, selected, 1)
-	require.Equal(t, "blood-duelist__attack__direction-right__contact", selected[0].ID)
-}
-
-func TestSelectExpandsOneFrameToItsCompleteAnimationRow(t *testing.T) {
-	dir := testkit.WritePack(t)
-	_, all := testkit.LoadTargets(t, dir)
-
-	selected, err := targets.Select(all, targets.Filter{
-		Object:    "blood-duelist",
-		Variants:  map[string]string{"direction": "right"},
-		Animation: "attack",
-		Frame:     "contact",
-	})
+	selected, err := targets.Select(all, targets.Filter{Exclude: map[string]bool{"blood-duelist": true}})
 
 	require.NoError(t, err)
-	require.Equal(t, []string{
-		"blood-duelist__attack__direction-right__00",
-		"blood-duelist__attack__direction-right__contact",
-	}, targetIDs(selected))
+	require.Equal(t, []string{"grass"}, targetIDs(selected))
 }
 
 func TestSelectRejectsEmptySelectorMatches(t *testing.T) {
@@ -124,45 +104,4 @@ func inputRoles(inputs []conditioning.Input) []conditioning.Role {
 		roles[i] = input.Role
 	}
 	return roles
-}
-
-func TestExpandPreservesFrameArrayOrderWhenExplicitFrameIDsSortDifferently(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 4,
-  "objects": [
-    {
-      "id": "duelist",
-      "description": "A duelist.",
-      "identityLocks": ["The same duelist appears in every frame."],
-      "registration": {"mode":"grounded"},
-      "size": { "width": 16, "height": 16 },
-      "variants": [{
-        "id": "direction",
-        "description": "Direction.",
-        "values": [{"id":"right","description":"Right.","reference":{"path":"right.png","description":"Right reference."}}]
-      }],
-      "animations": [
-        {
-          "id": "attack",
-          "description": "Attack.",
-          "frames": [
-            { "id": "windup", "description": "Windup." },
-            { "id": "contact", "description": "Hit." }
-          ]
-        }
-      ],
-      "deploy": { "pathTemplate": "units/{object}__{animation}__{frame}.png" }
-    }
-  ]
-}`), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "right.png"), testkit.PNG(t, 16, 16), 0o644))
-	_, all := testkit.LoadTargets(t, dir)
-
-	selected := targets.FilterTargets(all, targets.Filter{Object: "duelist", Animation: "attack"})
-
-	require.Len(t, selected, 2)
-	require.Equal(t, "windup", selected[0].FrameID)
-	require.Equal(t, "contact", selected[1].FrameID)
 }

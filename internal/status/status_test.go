@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStatusPrintsV10UnitStagesArtifactsAndReviewAction(t *testing.T) {
+func TestStatusPrintsV11UnitStagesArtifactsAndReviewAction(t *testing.T) {
 	dir := testkit.WriteFullUnitPack(t)
 	p, all := testkit.LoadTargets(t, dir)
 	outputDir := filepath.Join(dir, p.OutputDir)
@@ -30,6 +30,7 @@ func TestStatusPrintsV10UnitStagesArtifactsAndReviewAction(t *testing.T) {
 	require.NoError(t, status.Print(&output, manifest, all, targets.Filter{Object: "relic-knight"}))
 
 	require.Contains(t, output.String(), "unit: relic-knight state=awaiting_review")
+	require.Contains(t, output.String(), "provider_calls_remaining: 0")
 	require.Contains(t, output.String(), "master: character-master:relic-knight state=ready")
 	require.Contains(t, output.String(), "animation_board: animation-board:relic-knight:walk state=ready")
 	require.Contains(t, output.String(), "animation_board: animation-board:relic-knight:attack state=ready")
@@ -49,8 +50,11 @@ func TestRejectedUnitStatusRequiresFreshCompleteRun(t *testing.T) {
 		RunID:   "run",
 		Targets: map[string]*generate.TargetState{target.ID: {ID: target.ID, Status: generate.StatusRejected}},
 		Intermediates: map[string]*generate.IntermediateState{
-			"character-master:knight":     {ID: "character-master:knight", Kind: "character-master", Status: generate.StatusReady},
-			"animation-board:knight:walk": {ID: "animation-board:knight:walk", Kind: "animation-board", AnimationID: "walk", Status: generate.StatusRejected},
+			"character-master:knight": {ID: "character-master:knight", Kind: "character-master", Status: generate.StatusReady},
+			"animation-board:knight:walk": {
+				ID: "animation-board:knight:walk", Kind: "animation-board", AnimationID: "walk",
+				Status: generate.StatusRejected, HardRejections: []string{"foreground touches canvas edge"},
+			},
 		},
 		Units: map[string]*generate.UnitState{
 			"unit:knight": {
@@ -64,6 +68,7 @@ func TestRejectedUnitStatusRequiresFreshCompleteRun(t *testing.T) {
 	require.NoError(t, status.Print(&output, manifest, []targets.Target{target}, targets.Filter{Object: "knight"}))
 
 	require.Contains(t, output.String(), "next: sprites-ai-gen generate --run auto --object knight")
+	require.Contains(t, output.String(), "blocker: foreground touches canvas edge")
 	require.NotContains(t, output.String(), "--animation")
 	require.NotContains(t, output.String(), "--force")
 }
@@ -106,6 +111,7 @@ func TestStaticStatusRemainsSupported(t *testing.T) {
 	var output bytes.Buffer
 
 	require.NoError(t, status.Print(&output, manifest, []targets.Target{target}, targets.Filter{}))
+	require.Contains(t, output.String(), "provider_calls_remaining: 0")
 	require.Contains(t, output.String(), "source_candidate: 002/01")
 	require.Contains(t, output.String(), "next: sprites-ai-gen review --run run --object terrain-rock --status accepted")
 }

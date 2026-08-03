@@ -33,7 +33,12 @@ func generateCharacterMaster(
 		referencePaths[index] = direction.ReferencePath
 	}
 	profileMode := imageio.SubjectRegistrationMode(plan.RegistrationMode)
-	profile, err := imageio.BuildCanonicalSubjectProfile(referencePaths, profileMode)
+	profile, err := imageio.BuildCanonicalSubjectProfile(
+		referencePaths,
+		profileMode,
+		imageio.CanonicalScaleClass(plan.ScaleClass),
+		plan.Size.Height,
+	)
 	if err != nil {
 		return err
 	}
@@ -85,7 +90,7 @@ func generateCharacterMaster(
 		inputs = append(inputs, conditioning.Input{
 			ID: pack.DirectionReferenceID(plan.ObjectID, direction.ID), Role: conditioning.RolePose, Authority: "configured-direction-geometry",
 			SourcePath: direction.ReferencePath, Path: providerDirectionReferences[index],
-			Description: "View geometry and registration only; legacy colors are not authoritative. " +
+			Description: "Facing, neutral topology, equipment side, grounded registration, and relative roster-size evidence only; legacy colors, stretched anatomy, exact bounds, and proportions are not authoritative. " +
 				direction.ReferenceDescription,
 			Required: true,
 		})

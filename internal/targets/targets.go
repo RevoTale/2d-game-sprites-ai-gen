@@ -5,19 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/conditioning"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 )
 
+const StyleGuideTargetID = pack.StyleGuideObjectID
+
 type Target struct {
 	ID               string
 	ObjectID         string
+	ObjectKind       string
 	ObjectDesc       string
+	Archetype        string
+	Family           string
+	Style            pack.Style
 	IdentityLocks    []string
 	RenderMode       string
 	RegistrationMode string
+	DirectionID      string
+	DirectionDesc    string
+	DirectionRefPath string
+	DirectionRefDesc string
 	AnimationID      string
 	AnimationDesc    string
 	AnimationIndex   int
@@ -25,39 +36,36 @@ type Target struct {
 	FrameDesc        string
 	FrameIndex       int
 	Size             pack.Size
-	Variants         []VariantSelection
 	Inputs           []conditioning.Input
 	DeployTemplate   string
 	Prompt           string
 }
 
-type VariantSelection struct {
-	AxisID               string
-	ValueID              string
-	Description          string
-	ReferencePath        string
-	ReferenceDescription string
-}
-
 type Filter struct {
-	Object    string
-	Variants  map[string]string
-	Animation string
-	Frame     string
+	Object  string
+	Exclude map[string]bool
 }
 
-func Expand(p *pack.Pack, theme string) ([]Target, error) {
+func Expand(p *pack.Pack) ([]Target, error) {
 	var out []Target
 	for _, obj := range p.Objects {
-		combos := variantCombos(obj.Variants)
-		for _, combo := range combos {
-			if len(obj.Animations) == 0 {
-				out = append(out, makeTarget(p, obj, combo, pack.Animation{}, -1, -1, pack.Frame{}, theme))
-				continue
-			}
+		if obj.Kind == pack.KindStatic {
+			out = append(out, makeTarget(p, obj, nil, pack.Animation{}, -1, -1, pack.Frame{}))
+			continue
+		}
+		for directionIndex := range obj.Directions {
+			direction := &obj.Directions[directionIndex]
 			for animationIndex, animation := range obj.Animations {
-				for i, frame := range animation.Frames {
-					out = append(out, makeTarget(p, obj, combo, animation, animationIndex, i, frame, theme))
+				for frameIndex, frame := range animation.Frames {
+					out = append(out, makeTarget(
+						p,
+						obj,
+						direction,
+						animation,
+						animationIndex,
+						frameIndex,
+						frame,
+					))
 				}
 			}
 		}
@@ -65,27 +73,29 @@ func Expand(p *pack.Pack, theme string) ([]Target, error) {
 	return out, nil
 }
 
+func StyleGuideTarget(p *pack.Pack) Target {
+	target := Target{
+		ID:               StyleGuideTargetID,
+		ObjectID:         StyleGuideTargetID,
+		ObjectKind:       StyleGuideTargetID,
+		ObjectDesc:       p.StyleGuide.Description,
+		Style:            p.Style,
+		RenderMode:       pack.RenderModeOpaqueTile,
+		RegistrationMode: pack.RegistrationModeCanvas,
+		Size:             p.StyleGuide.Size,
+		Inputs:           roleInputs(conditioning.RoleStyle, p.StyleGuide.Inputs),
+		DeployTemplate:   p.StyleGuide.Deploy.Path,
+	}
+	target.Prompt = StyleGuidePrompt(p.Style, p.StyleGuide)
+	return target
+}
+
 func Match(target Target, filter Filter) bool {
+	if filter.Exclude[target.ObjectID] {
+		return false
+	}
 	if filter.Object != "" && target.ObjectID != filter.Object {
 		return false
-	}
-	if filter.Animation != "" && target.AnimationID != filter.Animation {
-		return false
-	}
-	if filter.Frame != "" && target.FrameID != filter.Frame {
-		return false
-	}
-	for axis, value := range filter.Variants {
-		found := false
-		for _, variant := range target.Variants {
-			if variant.AxisID == axis && variant.ValueID == value {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
 	}
 	return true
 }
@@ -100,58 +110,21 @@ func FilterTargets(all []Target, filter Filter) []Target {
 	return out
 }
 
-// Select validates a selector and expands an animated frame match to its
-// complete action/variant row. Static matches remain target-atomic.
 func Select(all []Target, filter Filter) ([]Target, error) {
-	matched := FilterTargets(all, filter)
-	if len(matched) == 0 {
+	selected := FilterTargets(all, filter)
+	if len(selected) == 0 {
 		return nil, errors.New("no targets matched selector")
-	}
-	if filter.Frame == "" {
-		return matched, nil
-	}
-	rows := map[string]bool{}
-	statics := map[string]bool{}
-	for _, target := range matched {
-		if target.AnimationID == "" {
-			statics[target.ID] = true
-			continue
-		}
-		rows[RowKey(target)] = true
-	}
-	selected := make([]Target, 0, len(matched))
-	for _, target := range all {
-		if statics[target.ID] || (target.AnimationID != "" && rows[RowKey(target)]) {
-			selected = append(selected, target)
-		}
 	}
 	return selected, nil
 }
 
-// RowKey identifies the action/variant row that owns an animated frame.
-func RowKey(target Target) string {
-	var b strings.Builder
-	b.WriteString(target.ObjectID)
-	b.WriteByte('\x00')
-	b.WriteString(target.AnimationID)
-	for _, variant := range target.Variants {
-		b.WriteByte('\x00')
-		b.WriteString(variant.AxisID)
-		b.WriteByte('=')
-		b.WriteString(variant.ValueID)
-	}
-	return b.String()
-}
-
-// AtomicGroups returns static targets individually and animated targets as
-// complete rows while preserving selector order.
 func AtomicGroups(selected []Target) [][]Target {
 	indexes := map[string]int{}
 	groups := make([][]Target, 0, len(selected))
 	for _, target := range selected {
 		key := "static\x00" + target.ID
 		if target.AnimationID != "" {
-			key = "row\x00" + RowKey(target)
+			key = "unit\x00" + target.ObjectID
 		}
 		index, ok := indexes[key]
 		if !ok {
@@ -164,37 +137,44 @@ func AtomicGroups(selected []Target) [][]Target {
 	return groups
 }
 
-func makeTarget(p *pack.Pack, obj pack.Object, variants []variantComboValue, animation pack.Animation, animationIndex, frameIndex int, frame pack.Frame, theme string) Target {
+func makeTarget(
+	p *pack.Pack,
+	obj pack.Object,
+	direction *pack.Direction,
+	animation pack.Animation,
+	animationIndex, frameIndex int,
+	frame pack.Frame,
+) Target {
 	parts := []string{obj.ID}
-	inputs := roleInputs(conditioning.RoleStyle, p.References)
+	inputs := []conditioning.Input{{
+		ID:          p.Style.Reference.ID,
+		Role:        conditioning.RoleStyle,
+		Authority:   "approved-style-guide",
+		SourcePath:  p.Style.Reference.Path,
+		Path:        p.Style.Reference.Path,
+		Description: p.Style.Reference.Description,
+		Required:    true,
+	}}
 	inputs = append(inputs, roleInputs(conditioning.RoleIdentity, obj.References)...)
-	var selections []VariantSelection
 	if animation.ID != "" {
 		parts = append(parts, animation.ID)
-		inputs = append(inputs, roleInputs(conditioning.RolePose, animation.References)...)
 	}
-	for _, variant := range variants {
-		inputs = append(inputs, roleInputs(conditioning.RolePose, variant.AxisRefs)...)
-		inputs = append(inputs, roleInputs(conditioning.RolePose, variant.ValueRefs)...)
-		selections = append(selections, VariantSelection{
-			AxisID:               variant.AxisID,
-			ValueID:              variant.ValueID,
-			Description:          variant.Description,
-			ReferencePath:        variant.ReferencePath,
-			ReferenceDescription: variant.ReferenceDescription,
-		})
-		parts = append(parts, variant.AxisID+"-"+variant.ValueID)
+	if direction != nil {
+		parts = append(parts, "direction-"+direction.ID)
 	}
 	frameID := ""
 	if frameIndex >= 0 {
 		frameID = pack.FrameID(frameIndex, frame)
 		parts = append(parts, frameID)
-		inputs = append(inputs, roleInputs(conditioning.RolePose, frame.References)...)
 	}
 	target := Target{
 		ID:               strings.Join(parts, "__"),
 		ObjectID:         obj.ID,
+		ObjectKind:       obj.Kind,
 		ObjectDesc:       obj.Description,
+		Archetype:        obj.Archetype,
+		Family:           obj.Family,
+		Style:            p.Style,
 		IdentityLocks:    append([]string(nil), obj.IdentityLocks...),
 		RenderMode:       pack.EffectiveRenderMode(obj),
 		RegistrationMode: pack.EffectiveRegistrationMode(obj),
@@ -205,52 +185,120 @@ func makeTarget(p *pack.Pack, obj pack.Object, variants []variantComboValue, ani
 		FrameDesc:        frame.Description,
 		FrameIndex:       frameIndex,
 		Size:             obj.Size,
-		Variants:         selections,
 		Inputs:           inputs,
 		DeployTemplate:   pack.DeployTemplate(obj),
 	}
-	target.Prompt = BuildPrompt(theme, target)
+	if direction != nil {
+		target.DirectionID = direction.ID
+		target.DirectionDesc = direction.Description
+		target.DirectionRefPath = direction.Reference.Path
+		target.DirectionRefDesc = direction.Reference.Description
+	}
+	target.Prompt = BuildPrompt(target)
 	return target
 }
 
 func roleInputs(role conditioning.Role, refs []pack.Reference) []conditioning.Input {
 	out := make([]conditioning.Input, 0, len(refs))
 	for _, ref := range refs {
-		out = append(out, conditioning.Input{ID: ref.ID, Role: role, Authority: role.String(), SourcePath: ref.Path, Path: ref.Path, Description: ref.Description, Required: ref.Required})
+		out = append(out, conditioning.Input{
+			ID:          ref.ID,
+			Role:        role,
+			Authority:   role.String(),
+			SourcePath:  ref.Path,
+			Path:        ref.Path,
+			Description: ref.Description,
+			Required:    ref.Required,
+		})
 	}
 	return out
 }
 
-func BuildPrompt(theme string, target Target) string {
+func BuildPrompt(target Target) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Theme\n%s\n\n# Object\n%s\n\n", strings.TrimSpace(theme), target.ObjectDesc)
-	for _, variant := range target.Variants {
-		fmt.Fprintf(&b, "# Variant: %s=%s\n%s\n\n", variant.AxisID, variant.ValueID, variant.Description)
+	writeStyleFacts(&b, target.Style)
+	fmt.Fprintf(&b, "\n# Object\n%s\n", target.ObjectDesc)
+	if target.Archetype != "" {
+		writeRuleSet(&b, "Unit archetype: "+target.Archetype, target.Style.Units.Archetypes[target.Archetype])
+	}
+	if target.Family != "" {
+		writeRuleSet(&b, "Terrain family: "+target.Family, target.Style.Terrain.Families[target.Family])
+	}
+	if target.DirectionID != "" {
+		fmt.Fprintf(&b, "\n# Direction: %s\n%s\n", target.DirectionID, target.DirectionDesc)
 	}
 	if target.AnimationID != "" {
-		fmt.Fprintf(&b, "# Animation: %s\n%s\n\n", target.AnimationID, target.AnimationDesc)
+		fmt.Fprintf(&b, "\n# Animation: %s\n%s\n", target.AnimationID, target.AnimationDesc)
 	}
 	if target.FrameID != "" {
-		fmt.Fprintf(&b, "# Frame: %s\n%s\n\n", target.FrameID, target.FrameDesc)
-	}
-	if target.RenderMode == pack.RenderModeOpaqueTile {
-		fmt.Fprintf(&b, "Generate one independent full-frame texture for a final %dx%d target. Do not compose or crop from a sprite sheet.\n", target.Size.Width, target.Size.Height)
-	} else {
-		fmt.Fprintf(&b, "Generate one independent sprite image for a final %dx%d target. Do not compose or crop from a sprite sheet.\n", target.Size.Width, target.Size.Height)
+		fmt.Fprintf(&b, "\n# Frame: %s\n%s\n", target.FrameID, target.FrameDesc)
 	}
 	return b.String()
 }
 
-// DeployPath resolves a target's configured output path below deployDir.
+func StyleGuidePrompt(style pack.Style, guide pack.StyleGuide) string {
+	var b strings.Builder
+	writeStyleFacts(&b, style)
+	fmt.Fprintf(&b, "\n# Original style guide\n%s\n", guide.Description)
+	return b.String()
+}
+
+func StyleFacts(style pack.Style) string {
+	var b strings.Builder
+	writeStyleFacts(&b, style)
+	return b.String()
+}
+
+// UnitStyleFacts omits terrain-only rules from character requests. The full
+// style still remains authoritative in sprites.json and in the style guide.
+func UnitStyleFacts(style pack.Style) string {
+	var b strings.Builder
+	writeSharedStyleFacts(&b, style)
+	writeStrings(&b, "Unit rules", style.Units.Common)
+	writeStrings(&b, "Forbidden", style.Forbidden)
+	return b.String()
+}
+
+func writeStyleFacts(b *strings.Builder, style pack.Style) {
+	writeSharedStyleFacts(b, style)
+	writeStrings(b, "Unit rules", style.Units.Common)
+	writeStrings(b, "Terrain rules", style.Terrain.Common)
+	writeStrings(b, "Forbidden", style.Forbidden)
+}
+
+func writeSharedStyleFacts(b *strings.Builder, style pack.Style) {
+	fmt.Fprintf(b, "# Style: %s\n%s\n", style.ID, style.Description)
+	writeStrings(b, "Principles", style.Principles)
+	fmt.Fprintf(
+		b,
+		"\nPalette: maximum %d colors; %s matching; %s alpha; %s dithering.\n",
+		style.Palette.MaxColors,
+		style.Palette.ColorSpace,
+		style.Palette.Alpha,
+		style.Palette.Dithering,
+	)
+	writeStrings(b, "Contrast hierarchy", style.ContrastHierarchy)
+}
+
+func writeRuleSet(b *strings.Builder, title string, rules pack.VisualRuleSet) {
+	fmt.Fprintf(b, "\n# %s\n%s\n", title, rules.Description)
+	writeStrings(b, "Rules", rules.Rules)
+}
+
+func writeStrings(b *strings.Builder, title string, values []string) {
+	fmt.Fprintf(b, "\n%s:\n", title)
+	for _, value := range values {
+		fmt.Fprintf(b, "- %s\n", value)
+	}
+}
+
 func DeployPath(deployDir string, target Target) (string, error) {
 	path := target.DeployTemplate
 	path = strings.ReplaceAll(path, "{target}", target.ID)
 	path = strings.ReplaceAll(path, "{object}", target.ObjectID)
 	path = strings.ReplaceAll(path, "{animation}", target.AnimationID)
 	path = strings.ReplaceAll(path, "{frame}", target.FrameID)
-	for _, variant := range target.Variants {
-		path = strings.ReplaceAll(path, "{variant."+variant.AxisID+"}", variant.ValueID)
-	}
+	path = strings.ReplaceAll(path, "{direction}", target.DirectionID)
 	if strings.ContainsAny(path, "{}") {
 		return "", fmt.Errorf("deploy path %q contains unresolved placeholders", path)
 	}
@@ -263,35 +311,15 @@ func DeployPath(deployDir string, target Target) (string, error) {
 	return filepath.Join(deployDir, path), nil
 }
 
-type variantComboValue struct {
-	AxisID               string
-	ValueID              string
-	Description          string
-	ReferencePath        string
-	ReferenceDescription string
-	AxisRefs             []pack.Reference
-	ValueRefs            []pack.Reference
-}
-
-func variantCombos(variants []pack.Variant) [][]variantComboValue {
-	if len(variants) == 0 {
-		return [][]variantComboValue{{}}
-	}
-	combos := [][]variantComboValue{{}}
-	for _, variant := range variants {
-		var next [][]variantComboValue
-		for _, combo := range combos {
-			for _, value := range variant.Values {
-				item := variantComboValue{AxisID: variant.ID, ValueID: value.ID, Description: value.Description, AxisRefs: variant.References, ValueRefs: value.References}
-				if value.Reference != nil {
-					item.ReferencePath = value.Reference.Path
-					item.ReferenceDescription = value.Reference.Description
-				}
-				extended := append(append([]variantComboValue{}, combo...), item)
-				next = append(next, extended)
-			}
+func ObjectIDs(all []Target) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, target := range all {
+		if !seen[target.ObjectID] {
+			seen[target.ObjectID] = true
+			ids = append(ids, target.ObjectID)
 		}
-		combos = next
 	}
-	return combos
+	sort.Strings(ids)
+	return ids
 }

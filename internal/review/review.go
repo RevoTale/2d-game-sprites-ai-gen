@@ -53,9 +53,6 @@ func Apply(all []targets.Target, opts Options) (Result, error) {
 			animatedObjects[target.ObjectID] = true
 		}
 	}
-	if len(animatedObjects) != 0 && (opts.Filter.Animation != "" || opts.Filter.Frame != "" || len(opts.Filter.Variants) != 0) {
-		return Result{}, errors.New("animated review is unit-atomic; select only --object")
-	}
 	for objectID := range animatedObjects {
 		unit := manifest.Units["unit:"+objectID]
 		if unit == nil || unit.Status != generate.StatusAwaitingReview {

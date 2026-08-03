@@ -15,6 +15,7 @@ const (
 	semanticAnchorSpacing = 384
 	semanticMinimumCanvas = 1024
 	semanticCanvasGuard   = 8
+	semanticOuterReserve  = 64
 )
 
 // SemanticLayout describes ordered pose anchors. Anchors establish semantic
@@ -52,10 +53,13 @@ func semanticLayout(count, columns int) (SemanticLayout, error) {
 		return SemanticLayout{}, fmt.Errorf("invalid semantic layout count=%d columns=%d", count, columns)
 	}
 	rows := (count + columns - 1) / columns
-	width := roundUp(max(semanticMinimumCanvas, columns*semanticAnchorSpacing), 16)
-	height := roundUp(max(semanticMinimumCanvas, rows*semanticAnchorSpacing), 16)
 	gridWidth := columns * semanticAnchorSpacing
 	gridHeight := rows * semanticAnchorSpacing
+	// A provider must see real canvas outside the outermost logical poses. The
+	// recovery guard detects clipping, but it cannot prevent a generated pose
+	// from expanding into an edge when the semantic grid itself fills the canvas.
+	width := roundUp(max(semanticMinimumCanvas, gridWidth+2*semanticOuterReserve), 16)
+	height := roundUp(max(semanticMinimumCanvas, gridHeight+2*semanticOuterReserve), 16)
 	left := (width-gridWidth)/2 + semanticAnchorSpacing/2
 	top := (height-gridHeight)/2 + semanticAnchorSpacing/2
 	layout := SemanticLayout{
@@ -318,9 +322,6 @@ func RecoverSemanticPoses(
 		}
 		poses[index] = pose
 	}
-	if err := validateSemanticSeparation(poses); err != nil {
-		return nil, err
-	}
 	for index := range poses {
 		if outputPaths == nil {
 			continue
@@ -339,7 +340,6 @@ func assignComponentsToAnchors(
 ) ([][]semanticComponent, error) {
 	groups := make([][]semanticComponent, len(layout.Anchors))
 	maximumDistance := float64(layout.AnchorSpacing) * 0.75
-	ambiguityDistance := float64(layout.AnchorSpacing) / 12
 	for _, component := range components {
 		best, second := -1, -1
 		bestDistance, secondDistance := math.MaxFloat64, math.MaxFloat64
@@ -355,7 +355,7 @@ func assignComponentsToAnchors(
 		if best < 0 || bestDistance > maximumDistance {
 			return nil, fmt.Errorf("semantic component %v has no pose ownership", component.bounds)
 		}
-		if second >= 0 && secondDistance-bestDistance <= ambiguityDistance {
+		if second >= 0 && math.Abs(secondDistance-bestDistance) <= 1e-9 {
 			return nil, fmt.Errorf("semantic component %v has ambiguous ownership", component.bounds)
 		}
 		groups[best] = append(groups[best], component)
@@ -386,11 +386,20 @@ func semanticPrimaryComponent(
 ) int {
 	const groundedTolerance = semanticAnchorSpacing / 12
 	maximumBottom := components[0].pivot.Y
+	maximumArea := components[0].area
 	for _, component := range components[1:] {
 		maximumBottom = max(maximumBottom, component.pivot.Y)
+		maximumArea = max(maximumArea, component.area)
 	}
 	selected := -1
 	for index, component := range components {
+		// Chroma recovery can leave isolated edge pixels. They may be closer to
+		// the logical anchor than the character, but cannot plausibly be its
+		// grounded body core. Keep large detached equipment eligible while
+		// excluding components below one sixteenth of the group's largest mass.
+		if component.area*16 < maximumArea {
+			continue
+		}
 		if maximumBottom-component.pivot.Y > groundedTolerance {
 			continue
 		}
@@ -405,21 +414,6 @@ func semanticPrimaryComponent(
 		}
 	}
 	return selected
-}
-
-func validateSemanticSeparation(poses []SemanticPose) error {
-	for left := range poses {
-		for right := left + 1; right < len(poses); right++ {
-			if poses[left].Bounds.Overlaps(poses[right].Bounds) {
-				return fmt.Errorf(
-					"semantic poses %02d and %02d have overlapping ownership bounds",
-					left,
-					right,
-				)
-			}
-		}
-	}
-	return nil
 }
 
 func semanticComponents(source *image.NRGBA) []semanticComponent {

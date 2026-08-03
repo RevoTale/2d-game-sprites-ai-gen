@@ -65,24 +65,6 @@ func TestAnimatedReviewAcceptsCompleteUnitOnly(t *testing.T) {
 	}
 }
 
-func TestAnimatedPartialReviewIsRejected(t *testing.T) {
-	dir := testkit.WriteFullUnitPack(t)
-	p, all := testkit.LoadTargets(t, dir)
-	outputDir := filepath.Join(dir, p.OutputDir)
-	_, err := generate.Run(context.Background(), all, provider.Fake{}, generate.Options{
-		OutputDir: outputDir, DeployDir: filepath.Join(dir, p.DeployDir), RunID: "run", Filter: targets.Filter{Object: "relic-knight"},
-	})
-	require.NoError(t, err)
-
-	_, err = review.Apply(all, review.Options{
-		OutputDir: outputDir, RunID: "run",
-		Filter: targets.Filter{Object: "relic-knight", Animation: "walk"},
-		Status: generate.StatusAccepted,
-	})
-
-	require.ErrorContains(t, err, "unit-atomic")
-}
-
 func TestRejectedUnitRecordsImmutableCompleteUnitDecision(t *testing.T) {
 	dir := testkit.WriteFullUnitPack(t)
 	p, all := testkit.LoadTargets(t, dir)

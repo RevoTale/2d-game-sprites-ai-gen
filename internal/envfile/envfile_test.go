@@ -13,7 +13,7 @@ func TestReadParsesSimpleDotenvEntriesWithoutShellExpansion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
 	require.NoError(t, os.WriteFile(path, []byte(`
 # comment
-SPRITES_AI_GEN_PROVIDER=openai
+APP_MODE=production
 OPENAI_API_KEY="test-key"
 RAW='$OPENAI_API_KEY'
 `), 0o600))
@@ -21,7 +21,7 @@ RAW='$OPENAI_API_KEY'
 	values, err := envfile.Read(path)
 
 	require.NoError(t, err)
-	require.Equal(t, "openai", values["SPRITES_AI_GEN_PROVIDER"])
+	require.Equal(t, "production", values["APP_MODE"])
 	require.Equal(t, "test-key", values["OPENAI_API_KEY"])
 	require.Equal(t, "$OPENAI_API_KEY", values["RAW"])
 }

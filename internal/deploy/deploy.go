@@ -441,20 +441,6 @@ func FormatPlan(plan Plan) string {
 
 func EnsureDeployDir(path string) error { return os.MkdirAll(path, 0o755) }
 
-func rowKey(target targets.Target) string {
-	var b strings.Builder
-	b.WriteString(target.ObjectID)
-	b.WriteString("__")
-	b.WriteString(target.AnimationID)
-	for _, variant := range target.Variants {
-		b.WriteString("__")
-		b.WriteString(variant.AxisID)
-		b.WriteByte('-')
-		b.WriteString(variant.ValueID)
-	}
-	return b.String()
-}
-
 func sortedGroupKeys(groups map[string][]targets.Target) []string {
 	keys := make([]string, 0, len(groups))
 	for key := range groups {

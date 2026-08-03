@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -26,6 +27,8 @@ import (
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
 )
 
+var productionProvider = provider.OpenAIFromEnvironment
+
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -48,7 +51,7 @@ func run(ctx context.Context, args []string) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		p, _, all, err := loadTargetsFromCommon(common)
+		p, all, err := loadTargetsFromCommon(common)
 		if err != nil {
 			return err
 		}
@@ -64,7 +67,19 @@ func run(ctx context.Context, args []string) error {
 			}
 			animatedObjects[target.ObjectID] = struct{}{}
 		}
-		fmt.Printf("sprite pack is valid: animated_objects=%d static_objects=%d targets=%d\n", len(animatedObjects), len(staticObjects), len(all))
+		guideState := "approved"
+		if _, statErr := os.Stat(filepath.Join(common.packDir, p.Style.Reference.Path)); errors.Is(statErr, os.ErrNotExist) {
+			guideState = "missing_bootstrap_required"
+		} else if statErr != nil {
+			return fmt.Errorf("inspect style guide: %w", statErr)
+		}
+		fmt.Printf(
+			"sprite pack is valid: animated_objects=%d static_objects=%d targets=%d style_guide=%s\n",
+			len(animatedObjects),
+			len(staticObjects),
+			len(all),
+			guideState,
+		)
 		return nil
 	case "generate":
 		return runGenerate(ctx, args[1:])
@@ -94,8 +109,7 @@ func runInit(args []string) error {
 		return err
 	}
 	files := map[string]string{
-		"THEME.md":     "# Theme\n\nHigh-detail pixel art with clean readable silhouettes.\n",
-		".env.example": "# OpenAI is the supported real image provider.\nSPRITES_AI_GEN_PROVIDER=openai\nOPENAI_API_KEY=\n",
+		".env.example": "# OpenAI is the only production image provider.\nOPENAI_API_KEY=\nSPRITES_AI_GEN_OPENAI_MODEL=gpt-image-2\n",
 		".gitignore":   ".env\n.env.*\n!.env.example\noutput/\n",
 		"sprites.json": starterSpritesJSON,
 	}
@@ -108,17 +122,17 @@ func runInit(args []string) error {
 			return err
 		}
 	}
-	return writeStarterDirectionReference(*packDir)
+	return writeStarterStyleInput(*packDir)
 }
 
-func writeStarterDirectionReference(packDir string) error {
-	path := filepath.Join(packDir, "references", "current-right.png")
+func writeStarterStyleInput(packDir string) error {
+	path := filepath.Join(packDir, "references", "original-style-input.png")
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
 	img := image.NewNRGBA(image.Rect(0, 0, 160, 160))
-	for y := 36; y < 148; y++ {
-		for x := 52; x < 108; x++ {
+	for y := 32; y < 128; y++ {
+		for x := 32; x < 128; x++ {
 			img.SetNRGBA(x, y, color.NRGBA{R: 100, G: 80, B: 160, A: 255})
 		}
 	}
@@ -134,58 +148,100 @@ func writeStarterDirectionReference(packDir string) error {
 
 func runGenerate(ctx context.Context, args []string) error {
 	fs, common := commonFlags("generate")
-	providerName := fs.String("provider", "", "real provider: openai; auto-detects from provider env when omitted")
-	fake := fs.Bool("fake", false, "use deterministic fake provider for tests and plumbing checks")
-	force := fs.Bool("force", false, "retry explicitly rejected targets")
 	allObjects := fs.Bool("all", false, "generate every object after reporting the exact provider-call count")
+	var excluded stringListFlag
+	fs.Var(&excluded, "exclude-object", "object id to exclude from --all; repeatable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	p, _, all, err := loadTargetsFromCommon(common)
+	p, all, err := loadTargetsFromCommon(common)
 	if err != nil {
 		return err
+	}
+	all, deployDir, err := scopedTargets(common, p, all)
+	if err != nil {
+		return err
+	}
+	if common.styleGuide && (*allObjects || len(excluded) != 0) {
+		return errors.New("--style-guide cannot be combined with --all or --exclude-object")
 	}
 	if *allObjects && common.object != "" {
 		return errors.New("--all cannot be combined with --object")
 	}
-	if !*allObjects && common.object == "" && !*fake {
-		return errors.New("real-provider generation requires --object <id>")
+	if len(excluded) != 0 && !*allObjects {
+		return errors.New("--exclude-object is valid only with --all")
 	}
-	if err := rejectAnimatedPartialSelector(all, common.filter(), "generate"); err != nil {
-		return err
+	if !common.styleGuide && !*allObjects && common.object == "" {
+		return errors.New("paid generation requires --object <id> or explicit --all")
 	}
-	if *force && selectsAnimated(all, common.filter()) {
-		return errors.New("animated generation is complete-unit only in V10; rejected runs require a new --run auto run")
+	filter := common.filter()
+	if *allObjects {
+		filter = targets.Filter{Exclude: map[string]bool{}}
+		known := map[string]bool{}
+		for _, id := range targets.ObjectIDs(all) {
+			known[id] = true
+		}
+		for _, id := range excluded {
+			if !known[id] {
+				return fmt.Errorf("--exclude-object %q does not match a configured object", id)
+			}
+			filter.Exclude[id] = true
+		}
 	}
-	if *allObjects && selectsAnimated(all, common.filter()) {
-		return errors.New("animated generation is complete-unit only in V10; select exactly one --object")
+	if _, err := targets.Select(all, filter); err != nil {
+		return fmt.Errorf("select generation scope: %w", err)
+	}
+	out := pack.OutputDir(p)
+	if *allObjects {
+		selected := targets.FilterTargets(all, filter)
+		var manifest *generate.Manifest
+		if common.runID != "" && common.runID != "auto" {
+			manifest, err = generate.Load(filepath.Join(common.packDir, out), common.runID)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		fmt.Printf(
+			"provider_calls_planned: %d\n",
+			generate.ProviderCallsRemaining(manifest, selected),
+		)
+	}
+	if !common.styleGuide {
+		if err := requireApprovedStyleGuide(common.packDir, p); err != nil {
+			return err
+		}
 	}
 	env, err := generateEnvironment(common.packDir)
 	if err != nil {
 		return err
 	}
-	gen, err := provider.Select(provider.SelectionOptions{ExplicitName: *providerName, Fake: *fake, Env: env})
+	gen, err := productionProvider(env)
 	if err != nil {
 		return err
 	}
 	all = resolveReferencePaths(all, common.packDir)
-	if *allObjects {
-		fmt.Printf("provider_calls_planned: %d\n", plannedProviderCalls(all, common.filter()))
-	}
-	out := pack.OutputDir(p)
 	if err := output.Validate(filepath.Join(common.packDir, out)); err != nil {
 		return err
 	}
-	deployDir := p.DeployDir
-	if deployDir != "" && !filepath.IsAbs(deployDir) {
-		deployDir = filepath.Join(common.packDir, deployDir)
+	configSHA256, err := pathSHA256(filepath.Join(common.packDir, "sprites.json"))
+	if err != nil {
+		return err
+	}
+	styleGuideSHA256 := ""
+	if !common.styleGuide {
+		styleGuideSHA256, err = pathSHA256(filepath.Join(common.packDir, p.Style.Reference.Path))
+		if err != nil {
+			return err
+		}
 	}
 	result, err := generate.Run(ctx, all, gen, generate.Options{
-		OutputDir: filepath.Join(common.packDir, out),
-		DeployDir: deployDir,
-		RunID:     common.runID,
-		Filter:    common.filter(),
-		Force:     *force,
+		OutputDir:        filepath.Join(common.packDir, out),
+		DeployDir:        deployDir,
+		RunID:            common.runID,
+		Filter:           filter,
+		ConfigSHA256:     configSHA256,
+		StyleGuideSHA256: styleGuideSHA256,
+		ContinueOnError:  *allObjects,
 		Progress: func(event generate.ProgressEvent) {
 			fmt.Println(formatGenerationProgress(event))
 		},
@@ -193,12 +249,42 @@ func runGenerate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("run_id: %s\ngenerated: %d\nskipped: %d\nawaiting_review: %d\n", result.RunID, result.Generated, result.Skipped, result.AwaitingReview)
+	fmt.Printf(
+		"run_id: %s\ngenerated: %d\nskipped: %d\nfailed: %d\nawaiting_review: %d\n",
+		result.RunID,
+		result.Generated,
+		result.Skipped,
+		result.Failed,
+		result.AwaitingReview,
+	)
 	manifest, err := generate.Load(filepath.Join(common.packDir, out), result.RunID)
 	if err != nil {
 		return err
 	}
-	return statusreport.Print(os.Stdout, manifest, all, common.filter())
+	return statusreport.Print(os.Stdout, manifest, all, filter)
+}
+
+func pathSHA256(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:]), nil
+}
+
+func requireApprovedStyleGuide(packDir string, p *pack.Pack) error {
+	path := filepath.Join(packDir, p.Style.Reference.Path)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf(
+				"approved style guide %q is missing; generate, review, and deploy it with --style-guide before asset generation",
+				p.Style.Reference.Path,
+			)
+		}
+		return fmt.Errorf("inspect approved style guide %q: %w", p.Style.Reference.Path, err)
+	}
+	return nil
 }
 
 func formatGenerationProgress(event generate.ProgressEvent) string {
@@ -254,13 +340,9 @@ func resolveReferencePaths(all []targets.Target, packDir string) []targets.Targe
 			}
 		}
 		out[i].Inputs = inputs
-		variants := append([]targets.VariantSelection(nil), out[i].Variants...)
-		for variantIndex := range variants {
-			if variants[variantIndex].ReferencePath != "" && !filepath.IsAbs(variants[variantIndex].ReferencePath) {
-				variants[variantIndex].ReferencePath = filepath.Join(packDir, variants[variantIndex].ReferencePath)
-			}
+		if out[i].DirectionRefPath != "" && !filepath.IsAbs(out[i].DirectionRefPath) {
+			out[i].DirectionRefPath = filepath.Join(packDir, out[i].DirectionRefPath)
 		}
-		out[i].Variants = variants
 	}
 	return out
 }
@@ -273,11 +355,12 @@ func runStatus(args []string) error {
 	if err := requireConcreteRunID(common.runID); err != nil {
 		return err
 	}
-	p, _, all, err := loadTargetsFromCommon(common)
+	p, all, err := loadTargetsFromCommon(common)
 	if err != nil {
 		return err
 	}
-	if err := rejectAnimatedPartialSelector(all, common.filter(), "status"); err != nil {
+	all, _, err = scopedTargets(common, p, all)
+	if err != nil {
 		return err
 	}
 	manifest, err := generate.Load(filepath.Join(common.packDir, pack.OutputDir(p)), common.runID)
@@ -297,11 +380,12 @@ func runReview(args []string) error {
 	if err := requireConcreteRunID(common.runID); err != nil {
 		return err
 	}
-	p, _, all, err := loadTargetsFromCommon(common)
+	p, all, err := loadTargetsFromCommon(common)
 	if err != nil {
 		return err
 	}
-	if err := rejectAnimatedPartialSelector(all, common.filter(), "review"); err != nil {
+	all, _, err = scopedTargets(common, p, all)
+	if err != nil {
 		return err
 	}
 	outputDir := filepath.Join(common.packDir, pack.OutputDir(p))
@@ -329,19 +413,16 @@ func runDeploy(args []string) error {
 	if err := requireConcreteRunID(common.runID); err != nil {
 		return err
 	}
-	p, _, all, err := loadTargetsFromCommon(common)
+	p, all, err := loadTargetsFromCommon(common)
 	if err != nil {
 		return err
 	}
-	if err := rejectAnimatedPartialSelector(all, common.filter(), "deploy"); err != nil {
+	all, deployDir, err := scopedTargets(common, p, all)
+	if err != nil {
 		return err
 	}
-	deployDir := p.DeployDir
 	if deployDir == "" {
 		return errors.New("deployDir is required")
-	}
-	if !filepath.IsAbs(deployDir) {
-		deployDir = filepath.Join(common.packDir, deployDir)
 	}
 	opts := deploy.Options{OutputDir: filepath.Join(common.packDir, pack.OutputDir(p)), RunID: common.runID, DeployDir: deployDir, Filter: common.filter()}
 	if *dryRun {
@@ -371,7 +452,11 @@ func runPrune(args []string) error {
 	if err := requireConcreteRunID(common.runID); err != nil {
 		return err
 	}
-	p, _, all, err := loadTargetsFromCommon(common)
+	p, all, err := loadTargetsFromCommon(common)
+	if err != nil {
+		return err
+	}
+	all, _, err = scopedTargets(common, p, all)
 	if err != nil {
 		return err
 	}
@@ -400,7 +485,7 @@ func runGitGuard(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	p, _, _, err := loadTargetsFromCommon(common)
+	p, _, err := loadTargetsFromCommon(common)
 	if err != nil {
 		return err
 	}
@@ -420,12 +505,10 @@ func runGitGuard(args []string) error {
 }
 
 type commonOptions struct {
-	packDir   string
-	runID     string
-	object    string
-	animation string
-	frame     string
-	variants  multiFlag
+	packDir    string
+	runID      string
+	object     string
+	styleGuide bool
 }
 
 func commonFlags(name string) (*flag.FlagSet, *commonOptions) {
@@ -434,9 +517,7 @@ func commonFlags(name string) (*flag.FlagSet, *commonOptions) {
 	fs.StringVar(&common.packDir, "pack", ".", "sprite pack directory")
 	fs.StringVar(&common.runID, "run", "auto", "run id")
 	fs.StringVar(&common.object, "object", "", "object id filter")
-	fs.StringVar(&common.animation, "animation", "", "animation id filter")
-	fs.StringVar(&common.frame, "frame", "", "frame id filter")
-	fs.Var(&common.variants, "variant", "variant filter as axis=value")
+	fs.BoolVar(&common.styleGuide, "style-guide", false, "select the configured original style guide")
 	return fs, common
 }
 
@@ -447,7 +528,13 @@ func rejectRemovedFlags(args []string) error {
 		"--allow-partial": "pending targets are ignored and animated units are reviewed atomically",
 		"--complete":      "deployment always selects complete accepted groups",
 		"--candidate":     "each attempt has exactly one candidate and candidate selection is automatic",
-		"--stage":         "V10 reviews the complete unit without an intermediate stage",
+		"--stage":         "V13 reviews the complete unit without an intermediate stage",
+		"--provider":      "OpenAI is the only production provider",
+		"--fake":          "the fake provider is private to automated tests",
+		"--force":         "rejected assets require a fresh V13 run",
+		"--animation":     "V13 animated generation, review, and deployment are complete-unit atomic",
+		"--variant":       "V13 uses configured directions and complete-unit atomicity",
+		"--frame":         "V13 does not support partial animated generation",
 	}
 	for _, arg := range args {
 		name := arg
@@ -461,43 +548,8 @@ func rejectRemovedFlags(args []string) error {
 	return nil
 }
 
-func rejectAnimatedPartialSelector(all []targets.Target, filter targets.Filter, command string) error {
-	if !selectsAnimated(all, filter) {
-		return nil
-	}
-	if filter.Animation != "" || filter.Frame != "" || len(filter.Variants) != 0 {
-		return fmt.Errorf("animated %s is complete-unit only in V10; select only --object", command)
-	}
-	return nil
-}
-
-func selectsAnimated(all []targets.Target, filter targets.Filter) bool {
-	for _, target := range all {
-		if target.AnimationID != "" && (filter.Object == "" || target.ObjectID == filter.Object) {
-			return true
-		}
-	}
-	return false
-}
-
 func plannedProviderCalls(all []targets.Target, filter targets.Filter) int {
-	statics := map[string]bool{}
-	animations := map[string]map[string]bool{}
-	for _, target := range targets.FilterTargets(all, filter) {
-		if target.AnimationID == "" {
-			statics[target.ID] = true
-			continue
-		}
-		if animations[target.ObjectID] == nil {
-			animations[target.ObjectID] = map[string]bool{}
-		}
-		animations[target.ObjectID][target.AnimationID] = true
-	}
-	total := len(statics)
-	for _, objectAnimations := range animations {
-		total += 1 + len(objectAnimations)
-	}
-	return total
+	return generate.ProviderCallsRemaining(nil, targets.FilterTargets(all, filter))
 }
 
 func requireConcreteRunID(runID string) error {
@@ -508,84 +560,127 @@ func requireConcreteRunID(runID string) error {
 }
 
 func (c *commonOptions) filter() targets.Filter {
-	variants := map[string]string{}
-	for _, item := range c.variants {
-		parts := strings.SplitN(item, "=", 2)
-		if len(parts) == 2 {
-			variants[parts[0]] = parts[1]
-		}
+	if c.styleGuide {
+		return targets.Filter{Object: targets.StyleGuideTargetID}
 	}
-	return targets.Filter{Object: c.object, Animation: c.animation, Frame: c.frame, Variants: variants}
+	return targets.Filter{Object: c.object}
 }
 
-type multiFlag []string
+type stringListFlag []string
 
-func (m *multiFlag) String() string { return strings.Join(*m, ",") }
-func (m *multiFlag) Set(value string) error {
-	parts := strings.SplitN(value, "=", 2)
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-		return fmt.Errorf("variant %q must use axis=value", value)
+func (m *stringListFlag) String() string { return strings.Join(*m, ",") }
+func (m *stringListFlag) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return errors.New("object id must not be empty")
 	}
-	axis, normalized := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[0])+"="+strings.TrimSpace(parts[1])
 	for _, existing := range *m {
-		if strings.HasPrefix(existing, axis+"=") {
-			return fmt.Errorf("variant axis %q was specified more than once", axis)
+		if existing == value {
+			return fmt.Errorf("object %q was specified more than once", value)
 		}
 	}
-	*m = append(*m, normalized)
+	*m = append(*m, value)
 	return nil
 }
 
-func loadTargetsFromCommon(common *commonOptions) (*pack.Pack, string, []targets.Target, error) {
-	p, theme, err := pack.Load(common.packDir)
+func loadTargetsFromCommon(common *commonOptions) (*pack.Pack, []targets.Target, error) {
+	p, err := pack.Load(common.packDir)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
-	all, err := targets.Expand(p, theme)
+	all, err := targets.Expand(p)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
-	return p, theme, all, nil
+	return p, all, nil
+}
+
+func scopedTargets(
+	common *commonOptions,
+	p *pack.Pack,
+	all []targets.Target,
+) ([]targets.Target, string, error) {
+	if common.styleGuide {
+		if common.object != "" {
+			return nil, "", errors.New("--style-guide cannot be combined with --object")
+		}
+		return []targets.Target{targets.StyleGuideTarget(p)}, common.packDir, nil
+	}
+	deployDir := p.DeployDir
+	if deployDir != "" && !filepath.IsAbs(deployDir) {
+		deployDir = filepath.Join(common.packDir, deployDir)
+	}
+	return all, deployDir, nil
 }
 
 const starterSpritesJSON = `{
-  "version": 4,
+  "version": 5,
   "outputDir": "output",
   "deployDir": "deploy",
+  "style": {
+    "id": "compact-dark-fantasy-tactics",
+    "description": "Original compact dark-fantasy tactics-RPG pixel art with broad silhouettes, strong dark contours, and restrained clustered shading.",
+    "principles": [
+      "Prefer broad readable pixel clusters over high-frequency noise.",
+      "Keep focal features readable at battlefield and portrait scale."
+    ],
+    "palette": {
+      "maxColors": 32,
+      "colorSpace": "linear-srgb",
+      "alpha": "binary",
+      "dithering": "none"
+    },
+    "contrastHierarchy": ["magic-effects", "units", "structures", "terrain"],
+    "units": {
+      "common": ["Use compact broad silhouettes and stable grounded registration."],
+      "archetypes": {
+        "compact-humanoid": {
+          "description": "Compact readable tactics-RPG humanoid.",
+          "scaleClass": "standard-humanoid",
+          "rules": ["Use a large focal head, broad shoulders, and short grounded legs."]
+        }
+      }
+    },
+    "terrain": {
+      "common": ["Use broad connected materials and reserve high contrast for gameplay subjects."],
+      "families": {
+        "ground": {
+          "description": "Quiet seamless battlefield ground.",
+          "rules": ["Keep large mid-dark material regions and rare bright accents."]
+        }
+      }
+    },
+    "forbidden": [
+      "No copied proprietary characters, terrain, UI, compositions, or motifs.",
+      "No blur, antialiasing, labels, platforms, or baked shadows."
+    ],
+    "reference": {
+      "id": "compact-dark-fantasy-style-v1",
+      "path": "references/style/compact-dark-fantasy-style-v1.png",
+      "description": "Approved original project style guide."
+    }
+  },
+  "styleGuide": {
+    "description": "One original style board showing a compact armored humanoid, compact caster, agile humanoid, broad monster, quiet ground with blocky ruin, and restrained crystal magic.",
+    "size": {"width": 1536, "height": 1024},
+    "inputs": [{
+      "id": "original-style-input",
+      "role": "style",
+      "path": "references/original-style-input.png",
+      "description": "Original project-owned visual evidence."
+    }],
+    "deploy": {"path": "references/style/compact-dark-fantasy-style-v1.png"}
+  },
   "objects": [
     {
-      "id": "blood-duelist",
-      "description": "Elegant demonic duelist with red coat, horned silhouette, and thin rapier.",
-      "identityLocks": [
-        "The horned silhouette, red coat, and thin rapier remain identical in every direction and frame.",
-        "The rapier remains in the same hand."
-      ],
-      "registration": { "mode": "grounded" },
-      "size": { "width": 160, "height": 160 },
-      "variants": [
-        {
-          "id": "direction",
-          "description": "Battlefield facing direction.",
-          "values": [
-            { "id": "right", "description": "Side view facing right.", "reference": { "path": "references/current-right.png", "description": "Current right-facing view-geometry and registration reference; colors are not authoritative." } }
-          ]
-        }
-      ],
-      "animations": [
-        {
-          "id": "attack",
-          "description": "Rapier attack animation with readable body motion.",
-          "frames": [
-            { "description": "Ready stance." },
-            { "description": "Windup." },
-            { "id": "contact", "description": "Forward thrust contact frame." },
-            { "description": "Recovery." }
-          ]
-        }
-      ],
-      "deploy": {
-        "pathTemplate": "units/{object}__{animation}__{variant.direction}__{frame}.png"
-      }
+      "id": "ground-example",
+      "kind": "static",
+      "family": "ground",
+      "renderMode": "opaque-tile",
+      "registration": "canvas",
+      "description": "Quiet seamless dark battlefield ground.",
+      "size": {"width": 256, "height": 256},
+      "deploy": {"pathTemplate": "terrain/ground-example.png"}
     }
   ]
 }

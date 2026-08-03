@@ -27,7 +27,6 @@ import (
 
 type Capabilities struct {
 	References bool
-	Masks      bool
 	Progress   bool
 }
 
@@ -55,7 +54,7 @@ type Fake struct {
 
 func (f Fake) Capabilities() Capabilities {
 	if f.CapabilitiesValue == (Capabilities{}) {
-		return Capabilities{References: true, Masks: true, Progress: true}
+		return Capabilities{References: true, Progress: true}
 	}
 	return f.CapabilitiesValue
 }
@@ -63,20 +62,6 @@ func (f Fake) Capabilities() Capabilities {
 func (f Fake) Generate(_ context.Context, req Request) (Result, error) {
 	if req.Size.X <= 0 || req.Size.Y <= 0 {
 		return Result{}, errors.New("fake provider requires positive size")
-	}
-	for _, input := range req.Inputs {
-		if input.Role != conditioning.RoleMask {
-			continue
-		}
-		data, err := os.ReadFile(input.Path)
-		if err != nil {
-			return Result{}, err
-		}
-		mask, err := png.Decode(bytes.NewReader(data))
-		if err != nil || mask.Bounds().Size() != req.Size {
-			continue
-		}
-		return fakeMaskedBoard(mask)
 	}
 	for _, role := range []conditioning.Role{conditioning.RoleIdentity, conditioning.RolePose} {
 		for _, input := range req.Inputs {
@@ -98,6 +83,17 @@ func (f Fake) Generate(_ context.Context, req Request) (Result, error) {
 	}
 	img := image.NewNRGBA(image.Rect(0, 0, req.Size.X, req.Size.Y))
 	fill := color.NRGBA{R: 120, G: 80, B: 180, A: 255}
+	if strings.Contains(strings.ToLower(req.Prompt), "full-bleed opaque") {
+		draw.Draw(img, img.Bounds(), &image.Uniform{C: fill}, image.Point{}, draw.Src)
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			return Result{}, err
+		}
+		return Result{
+			PNG:      buf.Bytes(),
+			Metadata: map[string]string{"provider": "fake", "source": "opaque-output"},
+		}, nil
+	}
 	marginX := max(2, req.Size.X/8)
 	marginY := max(2, req.Size.Y/8)
 	for y := marginY; y < req.Size.Y-marginY; y++ {
@@ -125,34 +121,6 @@ func imageHasForeground(img image.Image) bool {
 		}
 	}
 	return false
-}
-
-func fakeMaskedBoard(mask image.Image) (Result, error) {
-	img := image.NewNRGBA(mask.Bounds())
-	fill := color.NRGBA{R: 120, G: 80, B: 180, A: 255}
-	for y := mask.Bounds().Min.Y; y < mask.Bounds().Max.Y; y++ {
-		for x := mask.Bounds().Min.X; x < mask.Bounds().Max.X; x++ {
-			if color.NRGBAModel.Convert(mask.At(x, y)).(color.NRGBA).A != 0 || (x > mask.Bounds().Min.X && color.NRGBAModel.Convert(mask.At(x-1, y)).(color.NRGBA).A == 0) || (y > mask.Bounds().Min.Y && color.NRGBAModel.Convert(mask.At(x, y-1)).(color.NRGBA).A == 0) {
-				continue
-			}
-			right := x
-			for right < mask.Bounds().Max.X && color.NRGBAModel.Convert(mask.At(right, y)).(color.NRGBA).A == 0 {
-				right++
-			}
-			bottom := y
-			for bottom < mask.Bounds().Max.Y && color.NRGBAModel.Convert(mask.At(x, bottom)).(color.NRGBA).A == 0 {
-				bottom++
-			}
-			width, height := right-x, bottom-y
-			subject := image.Rect(x+width/4, y+height/6, right-width/4, bottom-height/6)
-			draw.Draw(img, subject, &image.Uniform{C: fill}, image.Point{}, draw.Src)
-		}
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return Result{}, err
-	}
-	return Result{PNG: buf.Bytes(), Metadata: map[string]string{"provider": "fake", "source": "mask-layout"}}, nil
 }
 
 type OpenAI struct {
@@ -183,7 +151,7 @@ type openAIImageRequest struct {
 }
 
 func (o OpenAI) Capabilities() Capabilities {
-	return Capabilities{References: true, Masks: true}
+	return Capabilities{References: true}
 }
 
 func (o OpenAI) Generate(ctx context.Context, req Request) (Result, error) {
@@ -272,7 +240,7 @@ func (o OpenAI) generateEdit(ctx context.Context, client *http.Client, apiKey, m
 	if err := writer.WriteField("model", model); err != nil {
 		return Result{}, err
 	}
-	if err := writer.WriteField("prompt", promptWithInputDescriptions(req.Prompt, req.Inputs)); err != nil {
+	if err := writer.WriteField("prompt", req.Prompt); err != nil {
 		return Result{}, err
 	}
 	if err := writer.WriteField("size", fmt.Sprintf("%dx%d", providerSize.X, providerSize.Y)); err != nil {
@@ -287,22 +255,9 @@ func (o OpenAI) generateEdit(ctx context.Context, client *http.Client, apiKey, m
 	if err := writer.WriteField("quality", defaultOpenAIQuality); err != nil {
 		return Result{}, err
 	}
-	var mask *conditioning.Input
 	for i := range req.Inputs {
 		input := &req.Inputs[i]
-		if input.Role == conditioning.RoleMask {
-			if mask != nil {
-				return Result{}, errors.New("openai edit accepts one mask input")
-			}
-			mask = input
-			continue
-		}
 		if err := addInputImage(writer, "image[]", *input); err != nil {
-			return Result{}, err
-		}
-	}
-	if mask != nil {
-		if err := addInputImage(writer, "mask", *mask); err != nil {
 			return Result{}, err
 		}
 	}
@@ -400,38 +355,6 @@ func isOpenAIReferenceMIME(contentType string) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func promptWithInputDescriptions(prompt string, inputs []conditioning.Input) string {
-	var b strings.Builder
-	b.WriteString(prompt)
-	b.WriteString("\n\n# Image References\n")
-	index := 0
-	for _, input := range inputs {
-		if input.Role == conditioning.RoleMask {
-			continue
-		}
-		index++
-		fmt.Fprintf(&b, "%02d. [%s] %s", index, roleName(input.Role), filepath.Base(input.Path))
-		if input.Description != "" {
-			fmt.Fprintf(&b, ": %s", input.Description)
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-func roleName(role conditioning.Role) string {
-	switch role {
-	case conditioning.RoleStyle:
-		return "style"
-	case conditioning.RoleIdentity:
-		return "identity"
-	case conditioning.RolePose:
-		return "pose"
-	default:
-		return "input"
 	}
 }
 

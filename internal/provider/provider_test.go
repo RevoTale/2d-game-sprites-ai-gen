@@ -102,11 +102,9 @@ func TestOpenAIUsesEditsEndpointWhenReferencesArePresent(t *testing.T) {
 	identityPath := filepath.Join(dir, "identity.png")
 	posePath := filepath.Join(dir, "pose.png")
 	referencePath := filepath.Join(dir, "style.png")
-	maskPath := filepath.Join(t.TempDir(), "mask.png")
 	require.NoError(t, os.WriteFile(identityPath, testPNG(t, 8, 8), 0o644))
 	require.NoError(t, os.WriteFile(posePath, testPNG(t, 8, 8), 0o644))
 	require.NoError(t, os.WriteFile(referencePath, testPNG(t, 8, 8), 0o644))
-	require.NoError(t, os.WriteFile(maskPath, testPNG(t, 8, 8), 0o644))
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		require.Equal(t, "/v1/images/edits", req.URL.Path)
 		require.True(t, strings.HasPrefix(req.Header.Get("Content-Type"), "multipart/form-data"))
@@ -121,10 +119,9 @@ func TestOpenAIUsesEditsEndpointWhenReferencesArePresent(t *testing.T) {
 		require.Equal(t, "identity.png", form.File["image[]"][0].Filename)
 		require.Equal(t, "pose.png", form.File["image[]"][1].Filename)
 		require.Equal(t, "style.png", form.File["image[]"][2].Filename)
-		require.Len(t, form.File["mask"], 1)
+		require.Empty(t, form.File["mask"])
 		require.Equal(t, "image/png", form.File["image[]"][0].Header.Get("Content-Type"))
 		require.Contains(t, form.Value["prompt"][0], "single 160x160 sprite")
-		require.Contains(t, form.Value["prompt"][0], "Style anchor.")
 		return openAIImageResponse(t, 1120, 1120), nil
 	})
 	openAI := provider.OpenAI{
@@ -139,7 +136,6 @@ func TestOpenAIUsesEditsEndpointWhenReferencesArePresent(t *testing.T) {
 			{Role: conditioning.RoleIdentity, Path: identityPath, Description: "Directional identity.", Required: true},
 			{Role: conditioning.RolePose, Path: posePath, Description: "Exact pose.", Required: true},
 			{Role: conditioning.RoleStyle, Path: referencePath, Description: "Style anchor.", Required: true},
-			{Role: conditioning.RoleMask, Path: maskPath, Description: "Motion mask.", Required: true},
 		},
 	})
 
@@ -218,10 +214,9 @@ func TestOpenAIReportsEditErrorBody(t *testing.T) {
 	require.NotContains(t, err.Error(), "bad reference image field")
 }
 
-func TestOpenAIReportsReferenceAndMaskCapabilities(t *testing.T) {
+func TestOpenAIReportsReferenceCapability(t *testing.T) {
 	capabilities := provider.OpenAI{}.Capabilities()
 	require.True(t, capabilities.References)
-	require.True(t, capabilities.Masks)
 }
 
 func TestOpenAIRejectsResponseWithUnexpectedDimensions(t *testing.T) {
@@ -235,77 +230,29 @@ func TestOpenAIRejectsResponseWithUnexpectedDimensions(t *testing.T) {
 	require.ErrorContains(t, err, "returned 1024x1024, expected 1120x1120")
 }
 
-func TestSelectProviderUsesFakeOnlyWhenFakeFlagIsSet(t *testing.T) {
-	selected, err := provider.Select(provider.SelectionOptions{Fake: true})
+func TestOpenAIFromEnvironmentRequiresAPIKey(t *testing.T) {
+	_, err := provider.OpenAIFromEnvironment(map[string]string{})
 
-	require.NoError(t, err)
-	require.IsType(t, provider.Fake{}, selected)
+	require.ErrorContains(t, err, "OPENAI_API_KEY is required")
 }
 
-func TestSelectProviderRejectsFakeNameFromExplicitProvider(t *testing.T) {
-	_, err := provider.Select(provider.SelectionOptions{ExplicitName: "fake"})
-
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "--fake")
-}
-
-func TestSelectProviderRejectsFakeNameFromEnvironment(t *testing.T) {
-	_, err := provider.Select(provider.SelectionOptions{
-		Env: map[string]string{
-			provider.EnvProvider: "fake",
-		},
-	})
-
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "--fake")
-}
-
-func TestSelectProviderDetectsOpenAIFromAPIKey(t *testing.T) {
-	selected, err := provider.Select(provider.SelectionOptions{
-		Env: map[string]string{
-			provider.EnvOpenAIAPIKey: "test-key",
-		},
+func TestOpenAIFromEnvironmentCreatesOnlyOpenAIProvider(t *testing.T) {
+	selected, err := provider.OpenAIFromEnvironment(map[string]string{
+		provider.EnvOpenAIAPIKey: "test-key",
 	})
 
 	require.NoError(t, err)
 	require.IsType(t, provider.OpenAI{}, selected)
 }
 
-func TestSelectProviderUsesOpenAIProviderEnvironmentWhenAPIKeyIsPresent(t *testing.T) {
-	selected, err := provider.Select(provider.SelectionOptions{
-		Env: map[string]string{
-			provider.EnvProvider:     "openai",
-			provider.EnvOpenAIAPIKey: "test-key",
-		},
-	})
-
-	require.NoError(t, err)
-	require.IsType(t, provider.OpenAI{}, selected)
-}
-
-func TestSelectProviderUsesEnvironmentModelOverride(t *testing.T) {
-	selected, err := provider.Select(provider.SelectionOptions{Env: map[string]string{
-		provider.EnvProvider:     "openai",
+func TestOpenAIFromEnvironmentUsesModelOverride(t *testing.T) {
+	selected, err := provider.OpenAIFromEnvironment(map[string]string{
 		provider.EnvOpenAIAPIKey: "test-key",
 		provider.EnvOpenAIModel:  "gpt-image-custom",
-	}})
+	})
 
 	require.NoError(t, err)
 	require.Equal(t, "gpt-image-custom", selected.(provider.OpenAI).Model)
-}
-
-func TestSelectProviderRequiresOpenAIAPIKeyWhenOpenAIIsExplicit(t *testing.T) {
-	_, err := provider.Select(provider.SelectionOptions{ExplicitName: "openai", Env: map[string]string{}})
-
-	require.Error(t, err)
-	require.Contains(t, err.Error(), provider.EnvOpenAIAPIKey)
-}
-
-func TestSelectProviderRejectsFakeFlagWithExplicitProvider(t *testing.T) {
-	_, err := provider.Select(provider.SelectionOptions{Fake: true, ExplicitName: "openai"})
-
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "--fake cannot be used with --provider")
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

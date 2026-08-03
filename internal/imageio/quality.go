@@ -22,6 +22,32 @@ func EvaluateCandidate(candidatePath, posePath string, guard int) (Metrics, []st
 	return metrics, candidateReasons(metrics), nil
 }
 
+func candidateReasons(metrics Metrics) []string {
+	var reasons []string
+	if metrics.EdgeGuardOccupied {
+		reasons = append(reasons, "edge_guard_occupied")
+	}
+	if metrics.Components != 1 {
+		reasons = append(
+			reasons,
+			fmt.Sprintf("foreground_components_%d", metrics.Components),
+		)
+	}
+	if metrics.SilhouetteOverlap < 0.35 {
+		reasons = append(reasons, "silhouette_overlap_below_threshold")
+	}
+	if metrics.CenterDistance > 0.15 {
+		reasons = append(reasons, "subject_center_drift")
+	}
+	if metrics.BaselineDelta > 0.05 {
+		reasons = append(reasons, "baseline_drift")
+	}
+	if metrics.OccupiedBoundsDelta > 0.15 {
+		reasons = append(reasons, "occupied_bounds_drift")
+	}
+	return reasons
+}
+
 func compareMasks(candidate, pose *image.NRGBA, guard int) Metrics {
 	bounds := candidate.Bounds()
 	var intersection, union, candidateArea, poseArea int

@@ -124,6 +124,37 @@ func WriteNearestNeighborContactSheet(paths []string, out string, scale int) err
 	return WriteNearestNeighborContactGrid(paths, out, len(paths), scale)
 }
 
+// WriteTiledRepeatPreview exposes opposite-edge and repeated-motif defects by
+// repeating the exact native tile without interpolation or seam repair.
+func WriteTiledRepeatPreview(path, out string, columns, rows int) error {
+	if columns < 1 || rows < 1 {
+		return fmt.Errorf("tiled repeat preview dimensions must be positive")
+	}
+	source, err := decodeNRGBA(path)
+	if err != nil {
+		return err
+	}
+	bounds := source.Bounds()
+	destination := image.NewNRGBA(image.Rect(
+		0,
+		0,
+		bounds.Dx()*columns,
+		bounds.Dy()*rows,
+	))
+	for row := range rows {
+		for column := range columns {
+			target := image.Rect(
+				column*bounds.Dx(),
+				row*bounds.Dy(),
+				(column+1)*bounds.Dx(),
+				(row+1)*bounds.Dy(),
+			)
+			draw.Draw(destination, target, source, bounds.Min, draw.Src)
+		}
+	}
+	return writePNG(out, destination)
+}
+
 // WriteNearestNeighborContactGrid writes equal-size images in row-major order
 // without interpolation. Empty trailing cells remain transparent.
 func WriteNearestNeighborContactGrid(paths []string, out string, columns, scale int) error {

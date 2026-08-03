@@ -73,6 +73,7 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 		DirectionScales:  masterScales,
 	}}
 	calibrations := make(map[string]imageio.SemanticScaleCalibration, len(plan.Animations))
+	registeredPoses := make(map[string][]imageio.SemanticPose, len(plan.Animations))
 	for _, animation := range plan.Animations {
 		board := manifest.Intermediates[animation.BoardID]
 		expectedPoses := len(plan.Directions) * len(animation.Frames)
@@ -84,6 +85,21 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 				"invalid_animation_pose_count: "+animation.ID,
 			)
 		}
+		registered, pivotOffsets, registrationErr :=
+			imageio.PrepareSemanticPosesForSharedBodyAnchor(
+				board.Poses,
+				len(animation.Frames),
+			)
+		if registrationErr != nil {
+			return rejectAnimatedAssembly(
+				opts,
+				manifest,
+				unit,
+				"invalid_board_registration: "+animation.ID+": "+
+					registrationErr.Error(),
+			)
+		}
+		registeredPoses[animation.BoardID] = registered
 		calibrationPaths := make([]string, len(plan.Directions))
 		boardPosesByDirection := make([][]imageio.SemanticPose, len(plan.Directions))
 		for directionIndex := range plan.Directions {
@@ -91,7 +107,7 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 			calibrationPaths[directionIndex] = board.Artifacts.RecoveredPosePaths[start]
 			boardPosesByDirection[directionIndex] = append(
 				boardPosesByDirection[directionIndex],
-				board.Poses[start:start+len(animation.Frames)]...,
+				registered[start:start+len(animation.Frames)]...,
 			)
 		}
 		calibration, calibrationErr := imageio.CalibrateSemanticPoseSet(
@@ -109,9 +125,10 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 					calibrationErr.Error(),
 			)
 		}
+		calibration.DirectionPivotOffsets = pivotOffsets
 		calibration.PoseMeasurements, calibrationErr = imageio.MeasureSemanticPoses(
 			board.Artifacts.RecoveredPosePaths,
-			board.Poses,
+			registered,
 			calibration.DirectionScales,
 			len(animation.Frames),
 			unit.Profile.Mode,
@@ -207,7 +224,7 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 		}
 		transforms, normalizeErr := imageio.WriteCalibratedSemanticPoses(
 			board.Artifacts.RecoveredPosePaths,
-			board.Poses,
+			registeredPoses[animation.BoardID],
 			outputs,
 			animation.Targets[0].Size.Width,
 			animation.Targets[0].Size.Height,
@@ -254,7 +271,7 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 			state.CellIndex = index
 			state.Dependencies = []string{master.ID, board.ID, unit.ID}
 			state.ProductionEligible = true
-			state.CapabilityMode = "v10-board-calibrated-registration"
+			state.CapabilityMode = "v13-board-calibrated-registration"
 			state.Palette = palette
 			state.Normalization = &NormalizationRecord{
 				ScaleAlgorithm: "reference-derived-board-calibrated-subject",
@@ -300,6 +317,22 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 			unit,
 			master.HardRejections[0],
 		)
+	}
+	unit.Artifacts.NativePreviewPath = masterFrames[0]
+	unit.Artifacts.PortraitPreviewPath = filepath.Join(unitDir, "review", "portrait-96.png")
+	neutralPNG, err := os.ReadFile(unit.Artifacts.NativePreviewPath)
+	if err != nil {
+		return err
+	}
+	if _, err := imageio.WriteIsolatedReviewPreviewPNG(
+		unit.Artifacts.PortraitPreviewPath,
+		neutralPNG,
+		96,
+		96,
+		palette,
+		imageio.SubjectRegistrationGrounded,
+	); err != nil {
+		return err
 	}
 	comparisonColumns := 1
 	for _, animation := range plan.Animations {
@@ -359,6 +392,8 @@ func rebuildCanonicalSubjectProfile(
 	profile, err := imageio.BuildCanonicalSubjectProfile(
 		referencePaths,
 		imageio.SubjectRegistrationMode(plan.RegistrationMode),
+		imageio.CanonicalScaleClass(plan.ScaleClass),
+		plan.Size.Height,
 	)
 	if err != nil {
 		return err

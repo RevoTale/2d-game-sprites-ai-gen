@@ -18,6 +18,14 @@ import (
 const defaultPaletteSize = 32
 
 const (
+	opaqueTileMicroClusterMaximumPixels = 8
+	opaqueTileDespecklePasses           = 4
+)
+
+// CompositePaletteSize preserves several per-asset ramps in one style board.
+const CompositePaletteSize = 128
+
+const (
 	backgroundExactDelta  = 72
 	backgroundSpillDelta  = 270
 	backgroundSpillExcess = 24
@@ -31,19 +39,26 @@ type PaletteColor struct {
 }
 
 type Metrics struct {
-	SilhouetteOverlap   float64 `json:"silhouetteOverlap"`
-	EdgeAgreement       float64 `json:"edgeAgreement"`
-	OccupiedAreaDelta   float64 `json:"occupiedAreaDelta"`
-	OccupiedBoundsDelta float64 `json:"occupiedBoundsDelta"`
-	CenterDistance      float64 `json:"centerDistance"`
-	BaselineDelta       float64 `json:"baselineDelta"`
-	PaletteDistance     float64 `json:"paletteDistance"`
-	Components          int     `json:"components"`
-	SecondaryComponents int     `json:"secondaryComponents,omitempty"`
-	EdgeGuardOccupied   bool    `json:"edgeGuardOccupied"`
-	CellEdgeOccupied    bool    `json:"cellEdgeOccupied"`
-	BackdropLike        bool    `json:"backdropLike"`
-	Score               float64 `json:"score"`
+	SilhouetteOverlap          float64 `json:"silhouetteOverlap"`
+	EdgeAgreement              float64 `json:"edgeAgreement"`
+	OccupiedAreaDelta          float64 `json:"occupiedAreaDelta"`
+	OccupiedBoundsDelta        float64 `json:"occupiedBoundsDelta"`
+	CenterDistance             float64 `json:"centerDistance"`
+	BaselineDelta              float64 `json:"baselineDelta"`
+	PaletteDistance            float64 `json:"paletteDistance"`
+	Components                 int     `json:"components"`
+	SecondaryComponents        int     `json:"secondaryComponents,omitempty"`
+	EdgeGuardOccupied          bool    `json:"edgeGuardOccupied"`
+	CellEdgeOccupied           bool    `json:"cellEdgeOccupied"`
+	BackdropLike               bool    `json:"backdropLike"`
+	Score                      float64 `json:"score"`
+	OpaqueRatio                float64 `json:"opaqueRatio,omitempty"`
+	HorizontalEdgeDelta        float64 `json:"horizontalEdgeDelta,omitempty"`
+	VerticalEdgeDelta          float64 `json:"verticalEdgeDelta,omitempty"`
+	MaximumHorizontalEdgeDelta float64 `json:"maximumHorizontalEdgeDelta,omitempty"`
+	MaximumVerticalEdgeDelta   float64 `json:"maximumVerticalEdgeDelta,omitempty"`
+	SmallClusterRatio          float64 `json:"smallClusterRatio,omitempty"`
+	LuminanceRange             float64 `json:"luminanceRange,omitempty"`
 }
 
 func WriteNormalizedPNG(path string, data []byte, width, height int) error {
@@ -56,6 +71,204 @@ func WriteNormalizedPNGWithPalette(path string, data []byte, width, height int, 
 }
 
 func WriteNormalizedPNGWithOptions(path string, data []byte, width, height int, locked []PaletteColor, removeBackground bool) ([]PaletteColor, error) {
+	return writeNormalizedPNG(
+		path,
+		data,
+		width,
+		height,
+		locked,
+		removeBackground,
+		false,
+		defaultPaletteSize,
+		false,
+	)
+}
+
+// WriteNormalizedOpaqueTilePNG applies the ordinary production palette and
+// then merges tiny exact-color islands into their dominant neighboring
+// material. Connectivity wraps across opposite edges so cleanup cannot create
+// a seam in a tile that is meant to repeat.
+func WriteNormalizedOpaqueTilePNG(path string, data []byte, width, height int, locked []PaletteColor) ([]PaletteColor, error) {
+	return writeNormalizedPNG(
+		path,
+		data,
+		width,
+		height,
+		locked,
+		false,
+		false,
+		defaultPaletteSize,
+		true,
+	)
+}
+
+// WriteNormalizedIsolatedPNG converts an isolated provider composition into
+// its declared native canvas. Provider background is coordinate reserve, not
+// subject scale: remove it, retain the complete foreground bounds, reduce that
+// foreground without stretching, and apply only semantic registration.
+func WriteNormalizedIsolatedPNG(
+	path string,
+	data []byte,
+	width, height int,
+	locked []PaletteColor,
+	registration SubjectRegistrationMode,
+) ([]PaletteColor, error) {
+	return writeNormalizedIsolatedPNG(
+		path,
+		data,
+		width,
+		height,
+		locked,
+		registration,
+		false,
+	)
+}
+
+// WriteIsolatedReviewPreviewPNG writes an exact-size review artifact from the
+// visible subject rather than the source canvas. It mirrors the production
+// portrait packer's alpha-bounds fitting while allowing display-only upscale.
+func WriteIsolatedReviewPreviewPNG(
+	path string,
+	data []byte,
+	width, height int,
+	locked []PaletteColor,
+	registration SubjectRegistrationMode,
+) ([]PaletteColor, error) {
+	return writeNormalizedIsolatedPNG(
+		path,
+		data,
+		width,
+		height,
+		locked,
+		registration,
+		true,
+	)
+}
+
+func writeNormalizedIsolatedPNG(
+	path string,
+	data []byte,
+	width, height int,
+	locked []PaletteColor,
+	registration SubjectRegistrationMode,
+	allowUpscale bool,
+) ([]PaletteColor, error) {
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("normalized png size must be positive, got %dx%d", width, height)
+	}
+	if registration != SubjectRegistrationCentered &&
+		registration != SubjectRegistrationGrounded {
+		return nil, fmt.Errorf("unsupported isolated registration %q", registration)
+	}
+	decoded, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("decode png: %w", err)
+	}
+	foreground := removeEdgeBackground(decoded)
+	foregroundBounds, err := alphaBounds(foreground)
+	if err != nil {
+		return nil, fmt.Errorf("isolated foreground: %w", err)
+	}
+	guard := max(1, min(width, height)/32)
+	safe := image.Rect(guard, guard, width-guard, height-guard)
+	if safe.Empty() {
+		return nil, fmt.Errorf("isolated target %dx%d has no safe foreground rectangle", width, height)
+	}
+	scale := math.Min(
+		float64(safe.Dx())/float64(foregroundBounds.Dx()),
+		float64(safe.Dy())/float64(foregroundBounds.Dy()),
+	)
+	if scale > 1 && !allowUpscale {
+		return nil, fmt.Errorf(
+			"isolated foreground %dx%d requires upscaling to fit target %dx%d",
+			foregroundBounds.Dx(),
+			foregroundBounds.Dy(),
+			width,
+			height,
+		)
+	}
+	fitted := aspectFitRect(
+		foregroundBounds.Dx(),
+		foregroundBounds.Dy(),
+		safe.Dx(),
+		safe.Dy(),
+	)
+	fittedWidth, fittedHeight := fitted.Dx(), fitted.Dy()
+	left := safe.Min.X + (safe.Dx()-fittedWidth)/2
+	top := safe.Min.Y + (safe.Dy()-fittedHeight)/2
+	if registration == SubjectRegistrationGrounded {
+		top = safe.Max.Y - fittedHeight
+	}
+	normalized := image.NewNRGBA(image.Rect(0, 0, width, height))
+	areaScale(
+		normalized,
+		image.Rect(left, top, left+fittedWidth, top+fittedHeight),
+		foreground,
+		foregroundBounds,
+	)
+	palette := locked
+	if len(palette) == 0 {
+		palette = extractPalette(normalized, defaultPaletteSize)
+	}
+	normalized = applyPalette(normalized, palette)
+	if err := writePNG(path, normalized); err != nil {
+		return nil, err
+	}
+	return palette, nil
+}
+
+// WriteNormalizedCompositePNG preserves several independent material ramps in
+// a comparison board. The 32-color production limit applies to each eventual
+// sprite, not to a composite reference representing several different assets.
+func WriteNormalizedCompositePNG(
+	path string,
+	data []byte,
+	width, height int,
+) ([]PaletteColor, error) {
+	return writeNormalizedPNG(
+		path,
+		data,
+		width,
+		height,
+		nil,
+		false,
+		false,
+		CompositePaletteSize,
+		false,
+	)
+}
+
+// WriteReviewPreviewPNG writes an exact-size review artifact. Unlike
+// production normalization, it may enlarge a small source because the result
+// is display evidence only and can never become a deployment candidate.
+func WriteReviewPreviewPNG(
+	path string,
+	data []byte,
+	width, height int,
+	locked []PaletteColor,
+) ([]PaletteColor, error) {
+	return writeNormalizedPNG(
+		path,
+		data,
+		width,
+		height,
+		locked,
+		false,
+		true,
+		defaultPaletteSize,
+		false,
+	)
+}
+
+func writeNormalizedPNG(
+	path string,
+	data []byte,
+	width, height int,
+	locked []PaletteColor,
+	removeBackground, allowUpscale bool,
+	paletteSize int,
+	despeckleOpaqueTile bool,
+) ([]PaletteColor, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("normalized png size must be positive, got %dx%d", width, height)
 	}
@@ -66,15 +279,22 @@ func WriteNormalizedPNGWithOptions(path string, data []byte, width, height int, 
 	if removeBackground {
 		img = removeEdgeBackground(img)
 	}
-	normalized, err := normalizeImage(img, width, height)
+	normalized, err := normalizeImage(img, width, height, allowUpscale)
 	if err != nil {
 		return nil, err
 	}
 	palette := locked
 	if len(palette) == 0 {
-		palette = extractPalette(normalized, defaultPaletteSize)
+		palette = extractPalette(normalized, paletteSize)
 	}
 	normalized = applyPalette(normalized, palette)
+	if despeckleOpaqueTile {
+		mergeSmallOpaqueColorClustersToroidal(
+			normalized,
+			opaqueTileMicroClusterMaximumPixels,
+			opaqueTileDespecklePasses,
+		)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -92,6 +312,103 @@ func WriteNormalizedPNGWithOptions(path string, data []byte, width, height int, 
 	return palette, nil
 }
 
+func mergeSmallOpaqueColorClustersToroidal(img *image.NRGBA, maximumPixels, passes int) {
+	bounds := img.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width == 0 || height == 0 || maximumPixels < 1 || passes < 1 {
+		return
+	}
+	directions := [...]image.Point{{X: -1}, {X: 1}, {Y: -1}, {Y: 1}}
+	for pass := 0; pass < passes; pass++ {
+		visited := make([]bool, width*height)
+		replacements := make(map[image.Point]color.NRGBA)
+		queue := make([]image.Point, 0, maximumPixels+1)
+		cluster := make([]image.Point, 0, maximumPixels+1)
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				index := (y-bounds.Min.Y)*width + x - bounds.Min.X
+				if visited[index] {
+					continue
+				}
+				value := img.NRGBAAt(x, y)
+				visited[index] = true
+				queue = append(queue[:0], image.Pt(x, y))
+				cluster = cluster[:0]
+				for len(queue) != 0 {
+					point := queue[len(queue)-1]
+					queue = queue[:len(queue)-1]
+					cluster = append(cluster, point)
+					for _, direction := range directions {
+						next := wrapTilePoint(point.Add(direction), bounds)
+						nextIndex := (next.Y-bounds.Min.Y)*width + next.X - bounds.Min.X
+						if visited[nextIndex] || img.NRGBAAt(next.X, next.Y) != value {
+							continue
+						}
+						visited[nextIndex] = true
+						queue = append(queue, next)
+					}
+				}
+				if value.A == 0 || len(cluster) > maximumPixels {
+					continue
+				}
+				replacement, ok := dominantOpaqueBoundaryColor(img, cluster, value, directions)
+				if !ok {
+					continue
+				}
+				for _, point := range cluster {
+					replacements[point] = replacement
+				}
+			}
+		}
+		if len(replacements) == 0 {
+			return
+		}
+		for point, replacement := range replacements {
+			img.SetNRGBA(point.X, point.Y, replacement)
+		}
+	}
+}
+
+func dominantOpaqueBoundaryColor(
+	img *image.NRGBA,
+	cluster []image.Point,
+	value color.NRGBA,
+	directions [4]image.Point,
+) (color.NRGBA, bool) {
+	counts := make(map[uint32]int)
+	bounds := img.Bounds()
+	for _, point := range cluster {
+		for _, direction := range directions {
+			neighbor := img.NRGBAAt(
+				wrapTilePoint(point.Add(direction), bounds).X,
+				wrapTilePoint(point.Add(direction), bounds).Y,
+			)
+			if neighbor.A == 0 || neighbor == value {
+				continue
+			}
+			key := uint32(neighbor.R)<<16 | uint32(neighbor.G)<<8 | uint32(neighbor.B)
+			counts[key]++
+		}
+	}
+	bestKey, bestCount := uint32(0), 0
+	for key, count := range counts {
+		if count > bestCount || count == bestCount && key < bestKey {
+			bestKey, bestCount = key, count
+		}
+	}
+	if bestCount == 0 {
+		return color.NRGBA{}, false
+	}
+	return color.NRGBA{R: uint8(bestKey >> 16), G: uint8(bestKey >> 8), B: uint8(bestKey), A: 255}, true
+}
+
+func wrapTilePoint(point image.Point, bounds image.Rectangle) image.Point {
+	width, height := bounds.Dx(), bounds.Dy()
+	x := (point.X-bounds.Min.X+width)%width + bounds.Min.X
+	y := (point.Y-bounds.Min.Y+height)%height + bounds.Min.Y
+	return image.Pt(x, y)
+}
+
 func HasTransparency(path string) (bool, error) {
 	img, err := decodeNRGBA(path)
 	if err != nil {
@@ -105,6 +422,31 @@ func HasTransparency(path string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// HasRemovableEdgeBackground reports whether an isolated provider result
+// already contains transparent reserve or has one flat edge background that
+// the production chroma removal can actually clear.
+func HasRemovableEdgeBackground(data []byte) (bool, error) {
+	decoded, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return false, fmt.Errorf("decode png: %w", err)
+	}
+	if imageHasTransparency(decoded) {
+		return true, nil
+	}
+	return imageHasTransparency(removeEdgeBackground(decoded)), nil
+}
+
+func imageHasTransparency(img image.Image) bool {
+	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
+		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
+			if color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA).A < 255 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func removeEdgeBackground(source image.Image) *image.NRGBA {
@@ -265,9 +607,13 @@ func SharedPaletteFromPNGs(paths []string, limit int) ([]PaletteColor, error) {
 	return paletteFromCounts(counts, limit), nil
 }
 
-func normalizeImage(img image.Image, width, height int) (*image.NRGBA, error) {
+func normalizeImage(
+	img image.Image,
+	width, height int,
+	allowUpscale bool,
+) (*image.NRGBA, error) {
 	bounds := img.Bounds()
-	if bounds.Dx() < width || bounds.Dy() < height {
+	if !allowUpscale && (bounds.Dx() < width || bounds.Dy() < height) {
 		return nil, fmt.Errorf("png dimensions are %dx%d, smaller than target %dx%d", bounds.Dx(), bounds.Dy(), width, height)
 	}
 	dst := image.NewNRGBA(image.Rect(0, 0, width, height))

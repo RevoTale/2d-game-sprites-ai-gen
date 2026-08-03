@@ -10,16 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSemanticAnimationLayoutUsesLogicalAnchorsWithoutCellGutters(t *testing.T) {
+func TestSemanticAnimationLayoutUsesLogicalAnchorsWithOuterReserve(t *testing.T) {
 	layout, err := SemanticAnimationLayout(3, 4)
 
 	require.NoError(t, err)
-	require.Equal(t, image.Pt(1536, 1152), layout.Canvas())
+	require.Equal(t, image.Pt(1664, 1280), layout.Canvas())
 	require.Equal(t, 384, layout.AnchorSpacing)
 	require.Equal(t, []image.Point{
-		{X: 192, Y: 192}, {X: 576, Y: 192}, {X: 960, Y: 192}, {X: 1344, Y: 192},
-		{X: 192, Y: 576}, {X: 576, Y: 576}, {X: 960, Y: 576}, {X: 1344, Y: 576},
-		{X: 192, Y: 960}, {X: 576, Y: 960}, {X: 960, Y: 960}, {X: 1344, Y: 960},
+		{X: 256, Y: 256}, {X: 640, Y: 256}, {X: 1024, Y: 256}, {X: 1408, Y: 256},
+		{X: 256, Y: 640}, {X: 640, Y: 640}, {X: 1024, Y: 640}, {X: 1408, Y: 640},
+		{X: 256, Y: 1024}, {X: 640, Y: 1024}, {X: 1024, Y: 1024}, {X: 1408, Y: 1024},
 	}, layout.Anchors)
 }
 
@@ -97,18 +97,44 @@ func TestRecoverSemanticPosesDoesNotMistakeLargeDetachedShieldForBody(t *testing
 	require.Len(t, poses[0].Components, 2)
 }
 
+func TestSemanticPrimaryComponentIgnoresGroundedPixelNoise(t *testing.T) {
+	components := []semanticComponent{
+		{area: 1, pivot: image.Pt(320, 610)},
+		{area: 18000, pivot: image.Pt(365, 642)},
+		{area: 3, pivot: image.Pt(312, 608)},
+	}
+
+	require.Equal(t, 1, semanticPrimaryComponent(components, image.Pt(320, 512)))
+}
+
 func TestRecoverSemanticPosesRejectsAmbiguousDetachedComponent(t *testing.T) {
 	layout := twoPoseSemanticLayout(t)
 	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
 	fillOpaque(board, image.Rect(280, 400, 345, 610), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
 	fillOpaque(board, image.Rect(670, 400, 735, 610), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
-	fillOpaque(board, image.Rect(500, 480, 515, 500), color.NRGBA{R: 220, G: 190, B: 80, A: 255})
+	fillOpaque(board, image.Rect(505, 480, 520, 500), color.NRGBA{R: 220, G: 190, B: 80, A: 255})
 	path := filepath.Join(t.TempDir(), "board.png")
 	require.NoError(t, writePNG(path, board))
 
 	_, err := RecoverSemanticPoses(path, layout, nil)
 
 	require.ErrorContains(t, err, "ambiguous ownership")
+}
+
+func TestRecoverSemanticPosesAssignsDetachedComponentOutsideExactBisector(t *testing.T) {
+	layout := twoPoseSemanticLayout(t)
+	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
+	fillOpaque(board, image.Rect(280, 400, 345, 610), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	fillOpaque(board, image.Rect(670, 400, 735, 610), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	fillOpaque(board, image.Rect(513, 480, 518, 500), color.NRGBA{R: 220, G: 190, B: 80, A: 255})
+	path := filepath.Join(t.TempDir(), "board.png")
+	require.NoError(t, writePNG(path, board))
+
+	poses, err := RecoverSemanticPoses(path, layout, nil)
+
+	require.NoError(t, err)
+	require.Len(t, poses[0].Components, 1)
+	require.Len(t, poses[1].Components, 2)
 }
 
 func TestRecoverSemanticPosesRejectsMergedPrimaryBodies(t *testing.T) {
@@ -123,6 +149,23 @@ func TestRecoverSemanticPosesRejectsMergedPrimaryBodies(t *testing.T) {
 	_, err := RecoverSemanticPoses(path, layout, nil)
 
 	require.ErrorContains(t, err, "primary body cores")
+}
+
+func TestRecoverSemanticPosesAllowsOverlappingBoundsForSeparatedPoses(t *testing.T) {
+	layout := twoPoseSemanticLayout(t)
+	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
+	fillOpaque(board, image.Rect(280, 400, 340, 620), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	fillOpaque(board, image.Rect(335, 420, 590, 440), color.NRGBA{R: 220, G: 190, B: 80, A: 255})
+	fillOpaque(board, image.Rect(670, 400, 730, 620), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	fillOpaque(board, image.Rect(500, 580, 675, 600), color.NRGBA{R: 220, G: 190, B: 80, A: 255})
+	path := filepath.Join(t.TempDir(), "board.png")
+	require.NoError(t, writePNG(path, board))
+
+	poses, err := RecoverSemanticPoses(path, layout, nil)
+
+	require.NoError(t, err)
+	require.Len(t, poses, 2)
+	require.True(t, poses[0].Bounds.Overlaps(poses[1].Bounds))
 }
 
 func TestRecoverSemanticPosesKeepsBodyPivotStableWithWideConnectedWeapon(t *testing.T) {
@@ -158,7 +201,7 @@ func TestCanonicalUnitRegistrationUsesOneScaleAndStableBodyPivot(t *testing.T) {
 	for index := range posePaths {
 		writePaddedReference(t, posePaths[index], referencePaths[index])
 	}
-	profile, err := BuildCanonicalSubjectProfile(referencePaths, SubjectRegistrationGrounded)
+	profile, err := BuildCanonicalSubjectProfile(referencePaths, SubjectRegistrationGrounded, CanonicalScaleClassReferenceStable, 320)
 	require.NoError(t, err)
 	transform, err := FitCanonicalSubjectTransform(profile, posePaths, poses, 320, 320)
 	require.NoError(t, err)
@@ -183,6 +226,109 @@ func TestCanonicalUnitRegistrationUsesOneScaleAndStableBodyPivot(t *testing.T) {
 	require.FileExists(t, outputs[1])
 }
 
+func TestCanonicalProfileUsesAbsoluteStandardHumanoidHeightWithoutCompounding(t *testing.T) {
+	dir := t.TempDir()
+	referencePath := filepath.Join(dir, "reference.png")
+	masterPath := filepath.Join(dir, "master.png")
+	for _, path := range []string{referencePath, masterPath} {
+		sprite := image.NewNRGBA(image.Rect(0, 0, 384, 384))
+		fillOpaque(
+			sprite,
+			image.Rect(142, 92, 242, 292),
+			color.NRGBA{R: 30, G: 80, B: 180, A: 255},
+		)
+		require.NoError(t, writePNG(path, sprite))
+	}
+	profile, err := BuildCanonicalSubjectProfile(
+		[]string{referencePath},
+		SubjectRegistrationGrounded,
+		CanonicalScaleClassStandardHumanoid,
+		384,
+	)
+	require.NoError(t, err)
+	pose := SemanticPose{
+		Bounds:     image.Rect(142, 92, 242, 292),
+		CoreBounds: image.Rect(142, 92, 242, 292),
+		Pivot:      image.Pt(192, 292),
+	}
+
+	transform, err := FitCanonicalSubjectTransform(
+		profile,
+		[]string{masterPath},
+		[]SemanticPose{pose},
+		384,
+		384,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, 180, profile.TargetNeutralHeight)
+	require.InDelta(t, 0.9, transform.Scale, 0.0001)
+	require.Equal(t, image.Pt(192, 292), transform.DirectionAnchors[0])
+
+	normalizedReferencePath := filepath.Join(dir, "normalized-reference.png")
+	normalized := image.NewNRGBA(image.Rect(0, 0, 384, 384))
+	fillOpaque(normalized, image.Rect(147, 102, 237, 282), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	require.NoError(t, writePNG(normalizedReferencePath, normalized))
+	stable, err := BuildCanonicalSubjectProfile(
+		[]string{normalizedReferencePath},
+		SubjectRegistrationGrounded,
+		CanonicalScaleClassStandardHumanoid,
+		384,
+	)
+	require.NoError(t, err)
+	stablePose := SemanticPose{Bounds: image.Rect(147, 102, 237, 282), CoreBounds: image.Rect(147, 102, 237, 282), Pivot: image.Pt(192, 282)}
+	stableTransform, err := FitCanonicalSubjectTransform(stable, []string{normalizedReferencePath}, []SemanticPose{stablePose}, 384, 384)
+	require.NoError(t, err)
+	require.InDelta(t, 1, stableTransform.Scale, 0.0001)
+}
+
+func TestCanonicalProfileReferenceStablePreservesCurrentHeightExactly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "reference.png")
+	sprite := image.NewNRGBA(image.Rect(0, 0, 384, 384))
+	fillOpaque(sprite, image.Rect(102, 76, 282, 276), color.NRGBA{R: 90, G: 60, B: 160, A: 255})
+	require.NoError(t, writePNG(path, sprite))
+
+	profile, err := BuildCanonicalSubjectProfile(
+		[]string{path},
+		SubjectRegistrationGrounded,
+		CanonicalScaleClassReferenceStable,
+		384,
+	)
+	require.NoError(t, err)
+	pose := SemanticPose{Bounds: image.Rect(102, 76, 282, 276), CoreBounds: image.Rect(102, 76, 282, 276), Pivot: image.Pt(192, 276)}
+	transform, err := FitCanonicalSubjectTransform(profile, []string{path}, []SemanticPose{pose}, 384, 384)
+
+	require.NoError(t, err)
+	require.Equal(t, 200, profile.TargetNeutralHeight)
+	require.InDelta(t, 1, transform.Scale, 0.0001)
+}
+
+func TestStandardHumanoidHeightToleranceRoundsFractionalBoundaryToWholePixel(t *testing.T) {
+	require.True(t, withinPixelTolerance(195, 180, standardHumanoidHeightTolerance))
+	require.True(t, withinPixelTolerance(165, 180, standardHumanoidHeightTolerance))
+	require.False(t, withinPixelTolerance(196, 180, standardHumanoidHeightTolerance))
+	require.False(t, withinPixelTolerance(164, 180, standardHumanoidHeightTolerance))
+}
+
+func TestStandardHumanoidScaleUsesMedianNeutralDirectionHeight(t *testing.T) {
+	medianHeight, withinTolerance := medianHeightWithinTolerance(
+		[]int{164, 180, 195},
+		180,
+		standardHumanoidHeightTolerance,
+	)
+	require.Equal(t, 180, medianHeight)
+	require.True(t, withinTolerance)
+
+	medianHeight, withinTolerance = medianHeightWithinTolerance(
+		[]int{164, 164, 195},
+		180,
+		standardHumanoidHeightTolerance,
+	)
+	require.Equal(t, 164, medianHeight)
+	require.False(t, withinTolerance)
+}
+
 func TestCanonicalRegistrationCentersLegacyReferenceCanvasWithoutChangingBodyScale(t *testing.T) {
 	dir := t.TempDir()
 	referencePath := filepath.Join(dir, "reference.png")
@@ -205,6 +351,8 @@ func TestCanonicalRegistrationCentersLegacyReferenceCanvasWithoutChangingBodySca
 	profile, err := BuildCanonicalSubjectProfile(
 		[]string{referencePath},
 		SubjectRegistrationGrounded,
+		CanonicalScaleClassReferenceStable,
+		384,
 	)
 	require.NoError(t, err)
 
@@ -245,7 +393,7 @@ func TestCanonicalRegistrationDoesNotShrinkBodyScaleForWideActionExtent(t *testi
 		fillOpaque(sprite, image.Rect(20, 0, 100, 200), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
 		require.NoError(t, writePNG(path, sprite))
 	}
-	profile, err := BuildCanonicalSubjectProfile(referencePaths, SubjectRegistrationGrounded)
+	profile, err := BuildCanonicalSubjectProfile(referencePaths, SubjectRegistrationGrounded, CanonicalScaleClassReferenceStable, 320)
 	require.NoError(t, err)
 	masterPoses := []SemanticPose{
 		{
@@ -295,6 +443,8 @@ func TestCanonicalTransformAllowsFeasiblePreferredAnchorTranslation(t *testing.T
 	profile, err := BuildCanonicalSubjectProfile(
 		[]string{referencePath},
 		SubjectRegistrationGrounded,
+		CanonicalScaleClassReferenceStable,
+		320,
 	)
 	require.NoError(t, err)
 	pose := SemanticPose{
@@ -393,6 +543,42 @@ func TestConstrainSemanticUnitAnchorsRejectsEmptyFeasibleInterval(t *testing.T) 
 
 	require.ErrorIs(t, err, ErrProductionFrameClipping)
 	require.ErrorContains(t, err, "direction 00 has no shared feasible anchor")
+}
+
+func TestPrepareSemanticPosesForSharedBodyAnchorPreservesDetectedPivots(t *testing.T) {
+	poses := []SemanticPose{
+		{
+			Index: 0, Anchor: image.Pt(100, 200),
+			Bounds: image.Rect(-40, 0, 80, 160),
+			Pivot:  image.Pt(20, 160),
+		},
+		{
+			Index: 1, Anchor: image.Pt(500, 200),
+			Bounds: image.Rect(430, 20, 610, 160),
+			Pivot:  image.Pt(470, 160),
+		},
+	}
+	transform := SemanticUnitTransform{
+		Scale:            1,
+		DirectionAnchors: []image.Point{image.Pt(160, 319)},
+	}
+
+	registered, offsets, err := PrepareSemanticPosesForSharedBodyAnchor(poses, 2)
+
+	require.NoError(t, err)
+	require.Equal(t, []image.Point{{X: -80, Y: -40}}, offsets)
+	require.Equal(t, image.Pt(20, 160), registered[0].Pivot)
+	// Every detected grounded body pivot is mapped to the shared output anchor.
+	// Provider placement inside a logical board slot must not move the unit body.
+	require.Equal(t, image.Pt(470, 160), registered[1].Pivot)
+	adjusted, err := ConstrainSemanticUnitAnchors(
+		transform,
+		[][]SemanticPose{registered},
+		320,
+		320,
+	)
+	require.NoError(t, err)
+	require.Equal(t, transform.Scale, adjusted.Scale)
 }
 
 func TestCalibrateSemanticPoseSetCancelsIndependentBoardScale(t *testing.T) {
@@ -528,6 +714,8 @@ func TestCenteredCanonicalRegistrationPreservesReferenceVisualCenter(t *testing.
 	profile, err := BuildCanonicalSubjectProfile(
 		[]string{referencePath},
 		SubjectRegistrationCentered,
+		CanonicalScaleClassReferenceStable,
+		320,
 	)
 	require.NoError(t, err)
 

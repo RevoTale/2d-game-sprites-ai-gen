@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/conditioning"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/provider"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
 )
@@ -23,7 +25,6 @@ const (
 type animatedWorkflowPlan struct {
 	StaticTargets []targets.Target
 	Units         []animatedUnitPlan
-	SelectedIDs   map[string]bool
 }
 
 type animatedUnitPlan struct {
@@ -34,6 +35,10 @@ type animatedUnitPlan struct {
 	Animations       []animationPlan
 	TargetIDs        []string
 	IdentityInputs   []conditioning.Input
+	Style            pack.Style
+	Archetype        string
+	ScaleClass       string
+	Size             pack.Size
 	ObjectDesc       string
 	IdentityLocks    []string
 	RegistrationMode string
@@ -59,16 +64,10 @@ type animationFramePlan struct {
 	Description string
 }
 
-func buildAnimatedPlan(all, selected []targets.Target, filter targets.Filter) (animatedWorkflowPlan, error) {
-	if filter.Animation != "" || filter.Frame != "" || len(filter.Variants) != 0 {
-		return animatedWorkflowPlan{}, errors.New(
-			"animated generation is complete-unit only in V10; start a new object run",
-		)
-	}
-	plan := animatedWorkflowPlan{SelectedIDs: make(map[string]bool, len(selected))}
+func buildAnimatedPlan(all, selected []targets.Target) (animatedWorkflowPlan, error) {
+	plan := animatedWorkflowPlan{}
 	animatedObjects := map[string]bool{}
 	for _, target := range selected {
-		plan.SelectedIDs[target.ID] = true
 		if target.AnimationID == "" {
 			plan.StaticTargets = append(plan.StaticTargets, target)
 			continue
@@ -101,25 +100,28 @@ func buildAnimatedUnitPlan(all []targets.Target, objectID string) (animatedUnitP
 		ObjectID:         objectID,
 		MasterID:         characterMasterKind + ":" + objectID,
 		ObjectDesc:       first.ObjectDesc,
+		Style:            first.Style,
+		Archetype:        first.Archetype,
+		ScaleClass:       first.Style.Units.Archetypes[first.Archetype].ScaleClass,
+		Size:             first.Size,
 		IdentityLocks:    append([]string(nil), first.IdentityLocks...),
 		IdentityInputs:   filterInputs(first.Inputs, conditioning.RoleStyle, conditioning.RoleIdentity),
 		RegistrationMode: first.RegistrationMode,
 	}
 	directionSeen := map[string]bool{}
 	for _, target := range objectTargets {
-		direction, ok := directionSelection(target)
-		if !ok || directionSeen[direction.ValueID] {
+		if target.DirectionID == "" || directionSeen[target.DirectionID] {
 			continue
 		}
-		if direction.ReferencePath == "" {
-			return animatedUnitPlan{}, fmt.Errorf("animated object %q direction %q has no configured reference", objectID, direction.ValueID)
+		if target.DirectionRefPath == "" {
+			return animatedUnitPlan{}, fmt.Errorf("animated object %q direction %q has no configured reference", objectID, target.DirectionID)
 		}
-		directionSeen[direction.ValueID] = true
+		directionSeen[target.DirectionID] = true
 		unit.Directions = append(unit.Directions, directionPlan{
-			ID:                   direction.ValueID,
-			Description:          direction.Description,
-			ReferencePath:        direction.ReferencePath,
-			ReferenceDescription: direction.ReferenceDescription,
+			ID:                   target.DirectionID,
+			Description:          target.DirectionDesc,
+			ReferencePath:        target.DirectionRefPath,
+			ReferenceDescription: target.DirectionRefDesc,
 		})
 	}
 	animationIndexes := map[string]int{}
@@ -149,11 +151,10 @@ func buildAnimationPlan(objectTargets []targets.Target, directions []directionPl
 		if target.AnimationID != animationID {
 			continue
 		}
-		direction, ok := directionSelection(target)
-		if !ok {
+		if target.DirectionID == "" {
 			return animationPlan{}, fmt.Errorf("target %q has no direction", target.ID)
 		}
-		byDirection[direction.ValueID] = append(byDirection[direction.ValueID], target)
+		byDirection[target.DirectionID] = append(byDirection[target.DirectionID], target)
 		animation.Description = target.AnimationDesc
 	}
 	for directionIndex, direction := range directions {
@@ -174,16 +175,7 @@ func buildAnimationPlan(objectTargets []targets.Target, directions []directionPl
 	return animation, nil
 }
 
-func directionSelection(target targets.Target) (targets.VariantSelection, bool) {
-	for _, variant := range target.Variants {
-		if variant.AxisID == "direction" {
-			return variant, true
-		}
-	}
-	return targets.VariantSelection{}, false
-}
-
-func preflightAnimated(plan animatedWorkflowPlan, capabilities provider.Capabilities, deployDir string) error {
+func preflightAnimated(plan animatedWorkflowPlan, capabilities provider.Capabilities) error {
 	if len(plan.Units) != 0 && !capabilities.References {
 		return errors.New("animated unit generation requires provider reference support")
 	}
@@ -194,28 +186,18 @@ func preflightAnimated(plan animatedWorkflowPlan, capabilities provider.Capabili
 		if len(filterInputs(target.Inputs, conditioning.RoleStyle, conditioning.RoleIdentity)) != 0 {
 			return fmt.Errorf("target %q uses image references unsupported by the selected provider", target.ID)
 		}
-		posePath, err := existingDeployPath(target, deployDir)
-		if err != nil {
-			return err
-		}
-		if posePath != "" {
-			return fmt.Errorf("target %q uses existing production art as an image reference unsupported by the selected provider", target.ID)
-		}
 	}
 	return nil
 }
 
-func validateAnimatedStart(manifest *Manifest, plan animatedWorkflowPlan, opts Options) error {
+func validateAnimatedStart(manifest *Manifest, plan animatedWorkflowPlan) error {
 	for _, unit := range plan.Units {
 		existing := manifest.Units[unit.ID]
-		if opts.Force {
-			return errors.New("animated generation is complete-unit only in V10; rejected runs require a new --run auto run")
-		}
 		if existing != nil &&
 			existing.Status == StatusRejected &&
 			(existing.AssemblyVersion >= AnimatedAssemblyVersion ||
 				existing.Review != nil) {
-			return fmt.Errorf("rejected animated runs are immutable in V10; start a new --run auto run for %q", unit.ObjectID)
+			return fmt.Errorf("rejected animated runs are immutable in V13; start a new --run auto run for %q", unit.ObjectID)
 		}
 	}
 	return nil
@@ -226,13 +208,19 @@ func runAnimatedWorkflow(ctx context.Context, selected []targets.Target, plan an
 	opts.report(ProgressEvent{Stage: ProgressRunStarted, RunID: opts.RunID, Total: len(selected)})
 	for _, target := range plan.StaticTargets {
 		state := manifest.Targets[target.ID]
-		force := opts.Force && plan.SelectedIDs[target.ID]
-		if shouldSkipGeneration(state, force) {
+		if shouldSkipGeneration(state) {
 			result.Skipped++
 			continue
 		}
-		posePath, _ := existingDeployPath(target, opts.DeployDir)
-		if err := generateStaticTarget(ctx, gen, opts, manifest, target, posePath, state, force, result.Generated+1, len(selected)); err != nil {
+		if err := generateStaticTarget(ctx, gen, opts, manifest, target, state, result.Generated+1, len(selected)); err != nil {
+			if opts.ContinueOnError {
+				recordRunFailure(manifest, target.ObjectID, "static-target", err)
+				result.Failed++
+				if saveErr := Save(opts.OutputDir, opts.RunID, manifest); saveErr != nil {
+					return result, saveErr
+				}
+				continue
+			}
 			return result, err
 		}
 		result.Generated++
@@ -252,6 +240,14 @@ func runAnimatedWorkflow(ctx context.Context, selected []targets.Target, plan an
 		}
 		generated, err := generateAnimatedUnit(ctx, gen, opts, manifest, unitPlan)
 		if err != nil {
+			if opts.ContinueOnError {
+				recordRunFailure(manifest, unitPlan.ObjectID, "animated-unit", err)
+				result.Failed++
+				if saveErr := Save(opts.OutputDir, opts.RunID, manifest); saveErr != nil {
+					return result, saveErr
+				}
+				continue
+			}
 			return result, err
 		}
 		result.Generated += generated
@@ -266,6 +262,16 @@ func runAnimatedWorkflow(ctx context.Context, selected []targets.Target, plan an
 	}
 	opts.report(ProgressEvent{Stage: ProgressRunCompleted, RunID: opts.RunID, Total: len(selected)})
 	return result, nil
+}
+
+func recordRunFailure(manifest *Manifest, objectID, stage string, err error) {
+	manifest.Failures = append(manifest.Failures, RunFailure{
+		ObjectID:  objectID,
+		Stage:     stage,
+		Error:     err.Error(),
+		Ambiguous: true,
+		FailedAt:  time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func generateAnimatedUnit(ctx context.Context, gen provider.Provider, opts Options, manifest *Manifest, plan animatedUnitPlan) (int, error) {
@@ -328,6 +334,52 @@ func readyIntermediate(state *IntermediateState) bool {
 	}
 	_, err := os.Stat(state.NormalizedPath)
 	return err == nil
+}
+
+// ProviderCallsRemaining reports calls that the current manifest can still
+// resume. A nil manifest represents a fresh run.
+func ProviderCallsRemaining(manifest *Manifest, selected []targets.Target) int {
+	animationsByObject := map[string]map[string]bool{}
+	total := 0
+	for _, target := range selected {
+		if target.AnimationID == "" {
+			if manifest == nil {
+				total++
+				continue
+			}
+			state := manifest.Targets[target.ID]
+			if state == nil || state.Status == StatusPending {
+				total++
+			}
+			continue
+		}
+		if animationsByObject[target.ObjectID] == nil {
+			animationsByObject[target.ObjectID] = map[string]bool{}
+		}
+		animationsByObject[target.ObjectID][target.AnimationID] = true
+	}
+	for objectID, animations := range animationsByObject {
+		if manifest == nil {
+			total += 1 + len(animations)
+			continue
+		}
+		unit := manifest.Units[unitKind+":"+objectID]
+		if unit != nil {
+			switch unit.Status {
+			case StatusAwaitingReview, StatusAccepted, StatusRejected, StatusDeployed:
+				continue
+			}
+		}
+		if !readyIntermediate(manifest.Intermediates[characterMasterKind+":"+objectID]) {
+			total++
+		}
+		for animationID := range animations {
+			if !readyIntermediate(manifest.Intermediates[animationBoardKind+":"+objectID+":"+animationID]) {
+				total++
+			}
+		}
+	}
+	return total
 }
 
 func allAnimationBoardsReady(manifest *Manifest, plan animatedUnitPlan) bool {

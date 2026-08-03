@@ -1,77 +1,54 @@
-# Consistency and normalization
+# Identity, scale, and motion consistency
 
-The canonical master is the sole colored appearance authority for animation
-requests. Current production art contributes exactly one configured reference
-per direction to master generation; no other production animation frame is
-uploaded. Object descriptions, identity locks, and optional object identity
-references define appearance, materials, and colors. Direction references
-define facing, neutral-pose topology, equipment side and geometry, proportions,
-occupied scale, and registration; legacy direction-specific recoloring is not
-authoritative. Broad style references are secondary.
+Character-master authority:
 
-The master uses a deterministic near-square semantic layout on a minimum
-1024x1024 opaque flat-chroma canvas. Animation boards use logical direction rows
-and ordered frame columns. Current three-direction/four-frame boards are
-1536x1152 with 384px anchor spacing. Anchors communicate order and approximate
-placement; they are not raster clipping boundaries. Provider masks, visible
-guides, panels, labels, and slot backgrounds are absent.
+1. object facts and identity locks own identity, equipment, materials, colors,
+   and defining features;
+2. the approved original style guide owns compact shape language, cluster
+   scale, contour, shading, and contrast;
+3. direction references own facing, topology, equipment side, grounded
+   registration, and relative roster-size evidence only.
 
-Each animation request sends one colored image: the opaque semantic board
-prefilled with the matching recovered master direction at every anchor. The
-separate master, style/object references, configured production references,
-other production frames, and neighboring animation boards remain unsent
-lineage or review evidence.
+Animation authority:
 
-After deterministic border-connected chroma removal, recovery:
+1. the accepted current-run master is the sole visual authority;
+2. JSON owns animation, direction, and ordered frame meaning.
 
-1. identifies the expected primary body cores;
-2. assigns them one-to-one to ordered logical anchors;
-3. attaches every disconnected component to one unambiguous core;
-4. forms separated complete pose groups;
-5. verifies row and frame ordering; and
-6. crops confirmed background only after ownership is proven.
+The canonical profile measures neutral reference height. A JSON archetype names
+either `standard-humanoid` or `reference-stable`; the CLI owns their numeric
+geometry. Standard humanoids target 180 px on a 384 px canvas with an
+eight-percent tolerance. Special silhouettes preserve their unmultiplied
+reference median, so a deployed result cannot grow again on its next run. One
+body scale and one grounded anchor per direction apply to master and every
+frame. Each detected pose pivot is mapped to that shared output anchor; frame
+`00` is neutral evidence, not a license for later provider-coordinate drift.
+Lean, weight transfer, limbs, cloth, and attached equipment animate around the
+fixed grounded root. Action extent never translates the complete body or
+changes scale.
 
-Wide attached swords, shields, wings, tails, and cloth may cross nominal anchor
-midpoints. Missing cores, ambiguous or unowned components, merged or overlapping
-groups, non-monotonic ordering, real canvas-edge contact, invalid background,
-or a pose that cannot fit the production frame reject the unit. Recovery never
-deletes, clears, synthesizes, or independently shrinks foreground.
+The native `384×384` frame is transparent motion reserve, not portrait scale.
+The `96×96` portrait evidence fits the neutral master by visible alpha bounds,
+matching the production packer.
 
-One canonical visible scale and one preferred anchor per configured direction
-are derived from the neutral reference frames and generated character master.
-When a pack intentionally moves to a larger target canvas, an exact approved
-predecessor reference is centered by its even canvas delta. The foreground and
-visual mass remain unchanged; only its anchor receives the centering offset.
-Reference hashes and source canvas dimensions are persisted in the canonical
-profile, and incomplete or changed lineage blocks offline reassembly.
-Separate provider boards are independent source coordinate systems. Frame `00`
-of each animation/direction is compared with the matching master direction by
-foreground visual mass; the resulting board-local source correction applies to
-every frame of that direction. It may cancel provider coordinate drift but may
-not create visible per-animation or per-frame resizing.
+Semantic recovery rejects missing, merged, ambiguous, reordered, overlapping,
+or canvas-clipped poses. A pose that cannot fit at canonical scale is rejected,
+not shrunk, cropped, cleared, or independently recentered. Identity, anatomy,
+palette, motion, cadence, and gameplay readability remain manual visual QA.
+Primary-body selection ignores microscopic recovered fragments below one
+sixteenth of the largest owned component. This prevents isolated chroma-edge
+pixels from becoming a pose pivot while keeping substantial disconnected
+equipment eligible for the audited pose bounds.
 
-Once all complete poses are recovered, the preferred anchor is projected by the
-minimum distance into the interval shared by the master and every calibrated
-pose set. Every animation frame of the direction reuses the resulting anchor,
-so moving equipment does not create per-frame jitter. Animation extents never
-reduce canonical visible scale; an oversized pose or empty feasible interval
-rejects the unit. Real source mass, bounds, canonical dimensions, correction
-ratios, and scales are persisted for review. One deterministic maximum-32-color
-palette is built from the canonical master only and applied with linear-sRGB
-matching, hard alpha, area reduction, and no dithering.
+Semantic animation boards keep the `384 px` logical anchor spacing used for
+pose ownership, plus `64 px` of real transparent canvas reserve beyond the
+outermost anchor grid on every side. For the current three-direction,
+four-frame animation this produces a `1664x1280` provider canvas. The reserve
+prevents wide mounted or weapon poses from being encouraged into the provider
+edge; it does not change production frame size, canonical body scale, or
+grounded registration.
 
-The OpenAI provider explicitly requests `quality=high` for generations and
-edits. GPT Image has no temperature or deterministic seed control in this
-workflow, so consistency comes from evidence hierarchy, shared requests,
-canonical palette locking, and manual review.
-
-Mechanical checks decide only safe recovery and registration. Identity,
-anatomy, equipment side and size, silhouette, occupied scale, cadence, motion,
-and battlefield readability remain manual-review decisions.
-
-Review artifacts include current direction references, raw and recovered
-master evidence, raw semantic boards, ownership overlays, recovered pose
-sheets, normalized animation sheets, the complete-unit sheet, native-size GIFs,
-identity comparisons, prompts, evidence, metrics, hashes, lineage, and QA
-notes. Normalized frames and the complete-unit sheet remain at the configured
-target size; review assembly does not add an implicit enlargement.
+The 32-color production limit applies independently to each deployable sprite.
+The style guide is a multi-subject comparison reference spanning several
+independent material ramps, so its deterministic normalization preserves up to
+128 colors. Reprocessing an awaiting-review guide after a normalization change
+reuses its recorded raw candidate and performs no provider call.

@@ -1,65 +1,21 @@
-# `sprites.json` V4
+# `sprites.json` V5
 
-V4 is provider-neutral. It stores character appearance, proportions,
-equipment, directions, animation/frame intent, source evidence, sizes, and
-one generic registration mode. It does not store provider prompts, canvas, chroma,
-semantic anchors, masks, pose recovery, model settings, sequencing,
-normalization, review, threshold, candidate, attempt, lineage, or run state.
+The strict JSON document is the only user-authored generation contract.
+Unknown fields fail.
 
-This is an ownership boundary, not just a schema convenience. Sprite
-descriptions may provide visual facts and motion semantics, but they must not
-duplicate or override generator protocol. Generator code owns board geometry,
-semantic anchors, provider-input preparation, pose ownership, validation,
-normalization, and lifecycle.
-Keep this file strict JSON; do not add comments or migrate it to JSONC.
+It owns global style/palette/contrast, style-guide inputs and destination, unit
+archetypes and their semantic `scaleClass`, terrain families, object identity and continuity locks, explicit
+directions, animation/frame semantics, render mode, dimensions, registration,
+references, and deploy templates.
 
-Every animated object has exactly one `direction` variant. Each direction value
-has one required reference:
+It never owns credentials, endpoints, provider lifecycle, canvas geometry,
+chroma, numeric scale targets, semantic anchors, recovery thresholds, attempts, prompts,
+reviews, hashes, lineage, manifests, or deployment state.
 
-```json
-{
-  "version": 4,
-  "objects": [{
-    "id": "relic-knight",
-    "description": "Heavy blue-and-gold knight.",
-    "identityLocks": ["The swept gold helmet crest remains unchanged."],
-    "registration": {"mode": "grounded"},
-    "size": {"width": 384, "height": 384},
-    "variants": [{
-      "id": "direction",
-      "description": "Authored battlefield direction.",
-      "values": [{
-        "id": "right",
-        "description": "Right-facing side view.",
-        "reference": {
-          "path": "../source/frames/units/relic-knight/walk/right/00.png",
-          "description": "Current right-facing view-geometry and registration reference; colors are not authoritative."
-        }
-      }]
-    }],
-    "animations": [{
-      "id": "walk",
-      "description": "Grounded walk.",
-      "frames": [{"id": "00", "description": "Neutral step."}]
-    }]
-  }]
-}
-```
+Animated objects require ordered `down`, `up`, and `right` directions and one
+neutral PNG reference per direction. New output is `384x384`; an exact legacy
+`320x320` reference is the only transition-size exception. Static objects
+select one configured terrain family and remain at configured dimensions.
 
-Direction references are pack-relative PNGs and must exist. Normally they match
-the object frame size. During an explicit canvas migration, the generator may
-also accept the exact predecessor canvas when both axes are 64 pixels smaller;
-it centers that reference with equal transparent padding without resampling its
-foreground. No arbitrary smaller reference is valid. Canonical profiles record
-the actual reference canvas so target-space anchors receive the same centering
-translation. Their evidence IDs are derived from object and direction.
-The generator sends them with the pose/view-geometry role; their descriptions
-must not claim appearance or color authority. Additional animated variant axes
-are unsupported. Static objects and generic style/identity references retain
-their existing shape.
-
-Registration modes are `grounded`, `centered`, and `canvas`. They do not carry
-manual boxes, coordinates, action envelopes, scale numbers, or thresholds.
-Animated objects require `grounded` or `centered`; opaque tiles use `canvas`.
-
-V1 through V3 packs fail with a V4 migration message.
+The style reference may be absent only while bootstrapping `--style-guide`.
+Ordinary generation fails before provider construction until it exists.

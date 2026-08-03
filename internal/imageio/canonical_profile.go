@@ -15,9 +15,21 @@ import (
 )
 
 const (
-	CanonicalSubjectProfileVersion  = 2
-	SemanticScaleCalibrationVersion = 1
-	semanticCalibrationFrameIndex   = 0
+	CanonicalSubjectProfileVersion    = 4
+	SemanticScaleCalibrationVersion   = 2
+	semanticCalibrationFrameIndex     = 0
+	standardHumanoidHeightNumerator   = 15
+	standardHumanoidHeightDenominator = 32
+	standardHumanoidHeightTolerance   = 0.08
+)
+
+// CanonicalScaleClass selects a system-owned neutral scale policy. JSON names
+// the semantic class; pixel targets and fitting remain CLI-owned.
+type CanonicalScaleClass string
+
+const (
+	CanonicalScaleClassStandardHumanoid CanonicalScaleClass = "standard-humanoid"
+	CanonicalScaleClassReferenceStable  CanonicalScaleClass = "reference-stable"
 )
 
 // SubjectRegistrationMode controls only deterministic subject anchoring.
@@ -31,29 +43,33 @@ const (
 // CanonicalSubjectProfile is reference-derived scale and anchor evidence for
 // one isolated object. Animation extents never contribute to this profile.
 type CanonicalSubjectProfile struct {
-	Version           int                     `json:"version"`
-	Mode              SubjectRegistrationMode `json:"mode"`
-	VisualMass        float64                 `json:"visualMass"`
-	RobustBounds      image.Rectangle         `json:"robustBounds"`
-	FullBounds        image.Rectangle         `json:"fullBounds"`
-	ReferenceMasses   []float64               `json:"referenceMasses"`
-	ReferenceHashes   []string                `json:"referenceHashes"`
-	ReferenceBounds   []image.Rectangle       `json:"referenceBounds"`
-	ReferencePivots   []image.Point           `json:"referencePivots"`
-	ReferenceCanvases []image.Point           `json:"referenceCanvases"`
+	Version             int                     `json:"version"`
+	Mode                SubjectRegistrationMode `json:"mode"`
+	ScaleClass          CanonicalScaleClass     `json:"scaleClass"`
+	TargetNeutralHeight int                     `json:"targetNeutralHeight"`
+	VisualMass          float64                 `json:"visualMass"`
+	RobustBounds        image.Rectangle         `json:"robustBounds"`
+	FullBounds          image.Rectangle         `json:"fullBounds"`
+	ReferenceMasses     []float64               `json:"referenceMasses"`
+	ReferenceHeights    []int                   `json:"referenceHeights"`
+	ReferenceHashes     []string                `json:"referenceHashes"`
+	ReferenceBounds     []image.Rectangle       `json:"referenceBounds"`
+	ReferencePivots     []image.Point           `json:"referencePivots"`
+	ReferenceCanvases   []image.Point           `json:"referenceCanvases"`
 }
 
 // SemanticScaleCalibration proves how an independent provider board is mapped
 // back to the canonical appearance scale. SourceRatios cancel board-local
 // coordinate differences; they do not permit visible per-animation resizing.
 type SemanticScaleCalibration struct {
-	Version           int                       `json:"version"`
-	CalibrationFrame  int                       `json:"calibrationFrame"`
-	MasterMasses      []float64                 `json:"masterMasses"`
-	CalibrationMasses []float64                 `json:"calibrationMasses"`
-	SourceRatios      []float64                 `json:"sourceRatios"`
-	DirectionScales   []float64                 `json:"directionScales"`
-	PoseMeasurements  []SemanticPoseMeasurement `json:"poseMeasurements,omitempty"`
+	Version               int                       `json:"version"`
+	CalibrationFrame      int                       `json:"calibrationFrame"`
+	MasterMasses          []float64                 `json:"masterMasses"`
+	CalibrationMasses     []float64                 `json:"calibrationMasses"`
+	SourceRatios          []float64                 `json:"sourceRatios"`
+	DirectionScales       []float64                 `json:"directionScales"`
+	DirectionPivotOffsets []image.Point             `json:"directionPivotOffsets"`
+	PoseMeasurements      []SemanticPoseMeasurement `json:"poseMeasurements,omitempty"`
 }
 
 // SemanticPoseMeasurement records real foreground and occupied-size evidence
@@ -76,6 +92,8 @@ type SemanticPoseMeasurement struct {
 func BuildCanonicalSubjectProfile(
 	paths []string,
 	mode SubjectRegistrationMode,
+	scaleClass CanonicalScaleClass,
+	outputHeight int,
 ) (CanonicalSubjectProfile, error) {
 	if len(paths) == 0 {
 		return CanonicalSubjectProfile{}, fmt.Errorf("canonical subject profile requires references")
@@ -83,10 +101,20 @@ func BuildCanonicalSubjectProfile(
 	if mode != SubjectRegistrationGrounded && mode != SubjectRegistrationCentered {
 		return CanonicalSubjectProfile{}, fmt.Errorf("unsupported subject registration mode %q", mode)
 	}
+	if outputHeight <= 0 {
+		return CanonicalSubjectProfile{}, fmt.Errorf("canonical subject profile requires a positive output height")
+	}
+	switch scaleClass {
+	case CanonicalScaleClassStandardHumanoid, CanonicalScaleClassReferenceStable:
+	default:
+		return CanonicalSubjectProfile{}, fmt.Errorf("unsupported canonical scale class %q", scaleClass)
+	}
 	profile := CanonicalSubjectProfile{
 		Version:           CanonicalSubjectProfileVersion,
 		Mode:              mode,
+		ScaleClass:        scaleClass,
 		ReferenceMasses:   make([]float64, len(paths)),
+		ReferenceHeights:  make([]int, len(paths)),
 		ReferenceHashes:   make([]string, len(paths)),
 		ReferenceBounds:   make([]image.Rectangle, len(paths)),
 		ReferencePivots:   make([]image.Point, len(paths)),
@@ -99,6 +127,7 @@ func BuildCanonicalSubjectProfile(
 			return CanonicalSubjectProfile{}, fmt.Errorf("canonical reference %02d: %w", index, err)
 		}
 		profile.ReferenceMasses[index] = mass
+		profile.ReferenceHeights[index] = bounds.Dy()
 		profile.ReferenceHashes[index] = hash
 		profile.ReferenceBounds[index] = bounds
 		profile.ReferencePivots[index] = pivot
@@ -106,6 +135,16 @@ func BuildCanonicalSubjectProfile(
 		relativeBounds[index] = bounds.Sub(pivot)
 	}
 	profile.VisualMass = medianFloat(profile.ReferenceMasses)
+	switch scaleClass {
+	case CanonicalScaleClassStandardHumanoid:
+		profile.TargetNeutralHeight = max(
+			1,
+			(outputHeight*standardHumanoidHeightNumerator+
+				standardHumanoidHeightDenominator/2)/standardHumanoidHeightDenominator,
+		)
+	case CanonicalScaleClassReferenceStable:
+		profile.TargetNeutralHeight = medianInt(profile.ReferenceHeights)
+	}
 	profile.RobustBounds = medianRectangle(relativeBounds)
 	profile.FullBounds = relativeBounds[0]
 	for _, bounds := range relativeBounds[1:] {
@@ -134,14 +173,14 @@ func FitCanonicalSubjectTransform(
 	}
 	ratios := make([]float64, len(masterPaths))
 	for index, path := range masterPaths {
-		mass, _, _, _, _, err := subjectEvidence(path, profile.Mode)
+		_, bounds, _, _, _, err := subjectEvidence(path, profile.Mode)
 		if err != nil {
 			return SemanticUnitTransform{}, fmt.Errorf("master direction %02d: %w", index, err)
 		}
-		if mass <= 0 || profile.ReferenceMasses[index] <= 0 {
-			return SemanticUnitTransform{}, fmt.Errorf("master direction %02d has invalid visual mass", index)
+		if bounds.Dy() <= 0 || profile.TargetNeutralHeight <= 0 {
+			return SemanticUnitTransform{}, fmt.Errorf("master direction %02d has invalid neutral height", index)
 		}
-		ratios[index] = math.Sqrt(profile.ReferenceMasses[index] / mass)
+		ratios[index] = float64(profile.TargetNeutralHeight) / float64(bounds.Dy())
 	}
 	transform := SemanticUnitTransform{
 		Scale:            medianFloat(ratios),
@@ -184,6 +223,7 @@ func FitCanonicalSubjectTransform(
 	safe := image.Rect(0, 0, width, height).Inset(
 		CanonicalFrameEdgePadding(width, height),
 	)
+	neutralHeights := make([]int, 0, len(masterPoses))
 	for index, pose := range masterPoses {
 		anchor := transform.DirectionAnchors[index]
 		if !anchor.In(image.Rect(0, 0, width, height)) {
@@ -200,6 +240,9 @@ func FitCanonicalSubjectTransform(
 			transform.Scale,
 			anchor,
 		)
+		if profile.ScaleClass == CanonicalScaleClassStandardHumanoid {
+			neutralHeights = append(neutralHeights, destination.Dy())
+		}
 		if destination.Dx() > safe.Dx() || destination.Dy() > safe.Dy() {
 			return SemanticUnitTransform{}, fmt.Errorf(
 				"%w: master direction %02d extent %v is larger than safe canonical frame %v",
@@ -210,7 +253,44 @@ func FitCanonicalSubjectTransform(
 			)
 		}
 	}
+	if profile.ScaleClass == CanonicalScaleClassStandardHumanoid {
+		medianHeight, withinTolerance := medianHeightWithinTolerance(
+			neutralHeights,
+			profile.TargetNeutralHeight,
+			standardHumanoidHeightTolerance,
+		)
+		if !withinTolerance {
+			delta := float64(absInt(medianHeight-profile.TargetNeutralHeight)) /
+				float64(profile.TargetNeutralHeight)
+			return SemanticUnitTransform{}, fmt.Errorf(
+				"master median neutral height %d differs from system target %d by %.1f%%",
+				medianHeight,
+				profile.TargetNeutralHeight,
+				delta*100,
+			)
+		}
+	}
 	return transform, nil
+}
+
+// withinPixelTolerance rounds the fractional policy allowance outward to the
+// nearest whole pixel. Measurements are integer pixel bounds, so rejecting the
+// single boundary pixel would make an exact percentage policy depend on
+// unrepresentable fractions.
+func withinPixelTolerance(actual, target int, tolerance float64) bool {
+	if target <= 0 {
+		return false
+	}
+	allowedDelta := int(math.Ceil(float64(target) * tolerance))
+	return absInt(actual-target) <= allowedDelta
+}
+
+func medianHeightWithinTolerance(heights []int, target int, tolerance float64) (int, bool) {
+	if len(heights) == 0 {
+		return 0, false
+	}
+	medianHeight := medianInt(append([]int(nil), heights...))
+	return medianHeight, withinPixelTolerance(medianHeight, target, tolerance)
 }
 
 // CalibrateSemanticPoseSet derives one source-coordinate correction per

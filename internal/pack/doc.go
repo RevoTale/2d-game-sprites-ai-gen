@@ -1,7 +1,6 @@
 // Package pack is the boundary for user-authored sprite-pack input.
 //
-// It owns the JSON schema for sprites.json, THEME.md loading, unknown-field
-// rejection, ID validation, reference-file validation, and safe relative path
-// checks. Other packages should receive an already validated Pack instead of
-// re-checking schema rules locally.
+// It owns strict sprites.json V5 decoding, unknown-field rejection, ID and
+// reference validation, and safe relative paths. Other packages receive an
+// already validated Pack and must not load parallel theme or descriptor files.
 package pack

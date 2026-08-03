@@ -10,7 +10,6 @@ const (
 	RoleStyle Role = iota + 1
 	RoleIdentity
 	RolePose
-	RoleMask
 )
 
 // Input preserves the source and purpose of one generation image.
@@ -33,8 +32,6 @@ func (role Role) String() string {
 		return "identity"
 	case RolePose:
 		return "motion"
-	case RoleMask:
-		return "mask"
 	default:
 		return fmt.Sprintf("unknown-%d", role)
 	}

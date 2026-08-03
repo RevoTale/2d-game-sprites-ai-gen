@@ -11,104 +11,84 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDecodeRejectsUnknownFields(t *testing.T) {
-	_, err := pack.Decode(strings.NewReader(`{"version":4,"objects":[],"type":"animated"}`))
+func TestValidateV5RequiresExactOrderedAuthoredDirections(t *testing.T) {
+	tests := []struct {
+		name    string
+		replace string
+		with    string
+	}{
+		{
+			name: "missing",
+			replace: `,
+        {"id":"right","description":"Right side view.","reference":{"path":"direction-right.png","description":"Facing and topology evidence only."}}`,
+		},
+		{
+			name:    "wrong order",
+			replace: `"id":"down","description":"Front/down view."`,
+			with:    `"id":"left","description":"Front/down view."`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := testkit.WritePack(t)
+			rewritePack(t, dir, tt.replace, tt.with)
 
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "unknown field")
+			_, err := pack.Load(dir)
+
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "direction")
+		})
+	}
 }
 
-func TestValidateRejectsV3WithMigrationMessage(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{"version":3,"objects":[]}`), 0o644))
-
-	_, _, err := pack.Load(dir)
-
-	require.ErrorContains(t, err, "sprites.json v3 is unsupported; migrate the pack to v4")
-}
-
-func TestValidateRequiresRegistrationModeForAnimatedObjects(t *testing.T) {
+func TestValidateV5RequiresDirectionReferenceAtNativeObjectSize(t *testing.T) {
 	dir := testkit.WritePack(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `
-      "registration": {"mode":"grounded"},`, ``, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "direction-right.png"),
+		testkit.PNG(t, 8, 8),
+		0o644,
+	))
 
-	_, _, err = pack.Load(dir)
+	_, err := pack.Load(dir)
 
-	require.ErrorContains(t, err, `animated object "blood-duelist" registration mode is required`)
+	require.ErrorContains(t, err, "is 8x8, expected 16x16")
 }
 
-func TestValidateRejectsCanvasRegistrationForAnimatedObjects(t *testing.T) {
+func TestValidateV5RejectsDirectionReferenceOutsidePackAndDeployRoots(t *testing.T) {
 	dir := testkit.WritePack(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `"mode":"grounded"`, `"mode":"canvas"`, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
+	outside := filepath.Join(filepath.Dir(dir), "outside.png")
+	require.NoError(t, os.WriteFile(outside, testkit.PNG(t, 16, 16), 0o644))
+	rewritePack(t, dir, `"path":"direction-right.png"`, `"path":"../outside.png"`)
 
-	_, _, err = pack.Load(dir)
+	_, err := pack.Load(dir)
 
-	require.ErrorContains(t, err, `animated object "blood-duelist" registration mode "canvas" is unsupported`)
+	require.ErrorContains(t, err, "outside the pack or deploy directory")
 }
 
-func TestValidateRejectsReferenceWithoutIDOrRole(t *testing.T) {
-	dir := testkit.WritePack(t)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "style.png"), testkit.PNG(t, 16, 16), 0o644))
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `"objects": [`, `"references": [{"path":"style.png","description":"Style."}], "objects": [`, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-
-	_, _, err = pack.Load(dir)
-
-	require.ErrorContains(t, err, "pack reference id")
-}
-
-func TestValidateRejectsDuplicateReferenceIDsAcrossScopes(t *testing.T) {
+func TestValidateV5ReservesDerivedDirectionReferenceIDsPackWide(t *testing.T) {
 	dir := testkit.WritePackWithReferences(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `"id":"identity"`, `"id":"style"`, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
+	rewritePack(
+		t,
+		dir,
+		`"id":"identity"`,
+		`"id":"direction-reference-blood-duelist-right"`,
+	)
 
-	_, _, err = pack.Load(dir)
+	_, err := pack.Load(dir)
 
-	require.ErrorContains(t, err, `duplicate reference id "style"`)
+	require.ErrorContains(t, err, `duplicate reference id "direction-reference-blood-duelist-right"`)
 }
 
-func TestValidateRejectsReferenceRoleThatDoesNotMatchOwner(t *testing.T) {
-	dir := testkit.WritePackWithReferences(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `"role":"style"`, `"role":"identity"`, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-
-	_, _, err = pack.Load(dir)
-
-	require.ErrorContains(t, err, `pack reference "style" role must be "style"`)
-}
-
-func TestValidateRequiresIdentityLocksForAnimatedObjects(t *testing.T) {
+func TestValidateV5RequiresLockedPaletteContract(t *testing.T) {
 	dir := testkit.WritePack(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `"identityLocks": ["Gold horned silhouette.", "Sword remains in the right hand."],`, ``, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
+	rewritePack(t, dir, `"maxColors":32`, `"maxColors":64`)
 
-	_, _, err = pack.Load(dir)
+	_, err := pack.Load(dir)
 
-	require.ErrorContains(t, err, `animated object "blood-duelist" identityLocks must contain at least one visual lock`)
+	require.ErrorContains(t, err, "maxColors=32")
 }
 
-func TestValidateRequiresOneSizedReferencePerAnimatedDirection(t *testing.T) {
+func TestValidateV5ConfinesGuideDeploymentAndMatchesStyleReference(t *testing.T) {
 	tests := []struct {
 		name    string
 		replace string
@@ -116,272 +96,97 @@ func TestValidateRequiresOneSizedReferencePerAnimatedDirection(t *testing.T) {
 		want    string
 	}{
 		{
-			name:    "missing",
-			replace: `, "reference": {"path":"direction-right.png","description":"Current right-facing view-geometry and registration reference; colors are not authoritative."}`,
-			want:    `direction "right" reference is required`,
+			name:    "outside style references",
+			replace: `"deploy":{"path":"references/style/compact-dark-fantasy-style-v1.png"}`,
+			with:    `"deploy":{"path":"other/guide.png"}`,
+			want:    "must stay under references/style",
 		},
 		{
-			name:    "unreadable",
-			replace: `"path":"direction-right.png"`,
-			with:    `"path":"missing.png"`,
-			want:    `reference "missing.png"`,
-		},
-		{
-			name:    "wrong size",
-			replace: `"path":"direction-right.png"`,
-			with:    `"path":"wrong-size.png"`,
-			want:    `is 8x8, expected 16x16`,
+			name:    "reference mismatch",
+			replace: `"deploy":{"path":"references/style/compact-dark-fantasy-style-v1.png"}`,
+			with:    `"deploy":{"path":"references/style/other.png"}`,
+			want:    "style reference path must equal",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := testkit.WritePack(t)
-			require.NoError(t, os.WriteFile(filepath.Join(dir, "wrong-size.png"), testkit.PNG(t, 8, 8), 0o644))
-			path := filepath.Join(dir, "sprites.json")
-			data, err := os.ReadFile(path)
-			require.NoError(t, err)
-			data = []byte(strings.Replace(string(data), tt.replace, tt.with, 1))
-			require.NoError(t, os.WriteFile(path, data, 0o644))
+			rewritePack(t, dir, tt.replace, tt.with)
 
-			_, _, err = pack.Load(dir)
+			_, err := pack.Load(dir)
 
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
 }
 
-func TestValidateAllowsCenteredLegacyReferenceCanvasDuringAnimatedCanvasMigration(t *testing.T) {
-	dir := testkit.WriteFullUnitPack(t)
-
-	p, _, err := pack.Load(dir)
-
-	require.NoError(t, err)
-	require.Equal(t, pack.Size{Width: 384, Height: 384}, p.Objects[0].Size)
-}
-
-func TestValidateRejectsArbitrarySmallerAnimatedReferenceCanvas(t *testing.T) {
-	dir := testkit.WriteFullUnitPack(t)
-	path := filepath.Join(
-		dir,
-		"deploy",
-		"units",
-		"relic-knight__walk__down__00.png",
-	)
-	require.NoError(t, os.WriteFile(path, testkit.PNGWithMargin(t, 256, 256, 40), 0o644))
-
-	_, _, err := pack.Load(dir)
-
-	require.ErrorContains(t, err, "expected 384x384 or centered legacy 320x320")
-}
-
-func TestValidateAcceptsDirectionReferencesWithinSiblingDeployDir(t *testing.T) {
-	dir := testkit.WritePack(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `"deployDir": "deploy"`, `"deployDir": "../source"`, 1))
-	for _, direction := range []string{"down", "up", "right"} {
-		name := "direction-" + direction + ".png"
-		sourcePath := filepath.Join(filepath.Dir(dir), "source", name)
-		require.NoError(t, os.MkdirAll(filepath.Dir(sourcePath), 0o755))
-		require.NoError(t, os.WriteFile(sourcePath, testkit.PNG(t, 16, 16), 0o644))
-		data = []byte(strings.ReplaceAll(string(data), `"`+name+`"`, `"../source/`+name+`"`))
-	}
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-
-	_, _, err = pack.Load(dir)
-
-	require.NoError(t, err)
-}
-
-func TestValidateRejectsDirectionReferenceOutsidePackAndDeployDir(t *testing.T) {
-	dir := testkit.WritePack(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	outside := filepath.Join(filepath.Dir(dir), "outside.png")
-	require.NoError(t, os.WriteFile(outside, testkit.PNG(t, 16, 16), 0o644))
-	data = []byte(strings.Replace(string(data), `"path":"direction-right.png"`, `"path":"../outside.png"`, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-
-	_, _, err = pack.Load(dir)
-
-	require.ErrorContains(t, err, "path traversal outside the pack or deploy directory is not allowed")
-}
-
-func TestValidateRejectsAdditionalAnimatedVariantAxis(t *testing.T) {
-	dir := testkit.WritePack(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `"id": "direction"`, `"id": "pose"`, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-
-	_, _, err = pack.Load(dir)
-
-	require.ErrorContains(t, err, `must define exactly one variant axis named "direction"`)
-}
-
-func TestValidateRejectsDuplicateDirectionReferencePaths(t *testing.T) {
-	dir := testkit.WritePack(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `"path":"direction-right.png"`, `"path":"direction-up.png"`, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-
-	_, _, err = pack.Load(dir)
-
-	require.ErrorContains(t, err, `directions "right" and "up" use duplicate reference`)
-}
-
-func TestValidateReservesDerivedDirectionReferenceIDsPackWide(t *testing.T) {
-	dir := testkit.WritePackWithReferences(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `"id":"style"`, `"id":"direction-reference-blood-duelist-right"`, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-
-	_, _, err = pack.Load(dir)
-
-	require.ErrorContains(t, err, `duplicate reference id "direction-reference-blood-duelist-right"`)
-}
-
-func TestValidateAcceptsOpaqueTileRenderModeForStaticObject(t *testing.T) {
-	dir := testkit.WritePack(t)
-	path := filepath.Join(dir, "sprites.json")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `"id": "grass",`, `"id": "grass",
-      "renderMode": "opaque-tile",`, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-
-	p, _, err := pack.Load(dir)
-
-	require.NoError(t, err)
-	require.Equal(t, pack.RenderModeOpaqueTile, pack.EffectiveRenderMode(p.Objects[1]))
-}
-
-func TestValidateRejectsUnsupportedOrAnimatedOpaqueTileRenderMode(t *testing.T) {
+func TestValidateV5RejectsDuplicateObjectAndFrameIDs(t *testing.T) {
 	tests := []struct {
-		name       string
-		objectID   string
-		renderMode string
-		want       string
+		name    string
+		replace string
+		with    string
+		want    string
 	}{
-		{name: "unsupported", objectID: "grass", renderMode: "seamless", want: `renderMode "seamless" is unsupported`},
-		{name: "animated", objectID: "blood-duelist", renderMode: pack.RenderModeOpaqueTile, want: `animated object "blood-duelist" renderMode "opaque-tile" is unsupported`},
+		{
+			name:    "object",
+			replace: `"id":"grass"`,
+			with:    `"id":"blood-duelist"`,
+			want:    `duplicate object id "blood-duelist"`,
+		},
+		{
+			name:    "frame",
+			replace: `{"id":"contact","description":"Hit."}`,
+			with:    `{"id":"00","description":"Hit."}`,
+			want:    `duplicate frame id "00"`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := testkit.WritePack(t)
-			path := filepath.Join(dir, "sprites.json")
-			data, err := os.ReadFile(path)
-			require.NoError(t, err)
-			needle := `"id": "` + tt.objectID + `",`
-			replacement := needle + "\n      \"renderMode\": \"" + tt.renderMode + "\","
-			data = []byte(strings.Replace(string(data), needle, replacement, 1))
-			require.NoError(t, os.WriteFile(path, data, 0o644))
+			rewritePack(t, dir, tt.replace, tt.with)
 
-			_, _, err = pack.Load(dir)
+			_, err := pack.Load(dir)
 
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
 }
 
-func TestValidateRejectsDuplicateExplicitFrameIDs(t *testing.T) {
+func TestValidateV5RejectsUnknownDeployPlaceholder(t *testing.T) {
 	dir := testkit.WritePack(t)
+	rewritePack(t, dir, `{object}.png`, `{unknown}.png`)
+
+	_, err := pack.Load(dir)
+
+	require.ErrorContains(t, err, `unknown deploy placeholder "{unknown}"`)
+}
+
+func TestValidateV5ReservesStyleGuideObjectID(t *testing.T) {
+	dir := testkit.WritePack(t)
+	rewritePack(t, dir, `"id":"grass"`, `"id":"style-guide"`)
+
+	_, err := pack.Load(dir)
+
+	require.ErrorContains(t, err, `object id "style-guide" is reserved`)
+}
+
+func TestLoadV5AcceptsFixtureAndDoesNotReturnTheme(t *testing.T) {
+	dir := testkit.WritePack(t)
+
+	p, err := pack.Load(dir)
+
+	require.NoError(t, err)
+	require.Len(t, p.Objects, 2)
+	require.Equal(t, pack.KindAnimated, p.Objects[0].Kind)
+	require.Equal(t, pack.KindStatic, p.Objects[1].Kind)
+}
+
+func rewritePack(t *testing.T, dir, old, replacement string) {
+	t.Helper()
 	path := filepath.Join(dir, "sprites.json")
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	data = []byte(strings.Replace(string(data), `{ "id": "contact", "description": "Hit." }`, `{ "id": "00", "description": "Hit." }`, 1))
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-
-	_, _, err = pack.Load(dir)
-
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "duplicate frame id")
-}
-
-func TestLoadAcceptsFixturePack(t *testing.T) {
-	dir := testkit.WritePack(t)
-
-	p, theme, err := pack.Load(dir)
-
-	require.NoError(t, err)
-	require.Contains(t, theme, "smooth pixel art")
-	require.Len(t, p.Objects, 2)
-}
-
-func TestValidateRejectsUnknownDeployTemplatePlaceholders(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 4,
-  "objects": [
-    {
-      "id": "duelist",
-      "description": "A duelist.",
-      "size": { "width": 16, "height": 16 },
-      "deploy": { "pathTemplate": "units/{object}__{unknown}.png" }
-    }
-  ]
-}`), 0o644))
-
-	_, _, err := pack.Load(dir)
-
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "unknown deploy placeholder")
-}
-
-func TestLoadAcceptsStaticObjectWithoutExplicitDeployTemplate(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 4,
-  "objects": [
-    {
-      "id": "grass",
-      "description": "A grass tile.",
-      "size": { "width": 16, "height": 16 }
-    }
-  ]
-}`), 0o644))
-
-	p, _, err := pack.Load(dir)
-
-	require.NoError(t, err)
-	require.Equal(t, "sprites/{target}.png", pack.DeployTemplate(p.Objects[0]))
-}
-
-func TestLoadAcceptsStaticVariantObjectWithoutExplicitDeployTemplate(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "THEME.md"), []byte("theme"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sprites.json"), []byte(`{
-  "version": 4,
-  "objects": [
-    {
-      "id": "grass",
-      "description": "A grass tile.",
-      "size": { "width": 16, "height": 16 },
-      "variants": [
-        {
-          "id": "season",
-          "description": "Seasonal tile variant.",
-          "values": [
-            { "id": "summer", "description": "Summer grass." },
-            { "id": "winter", "description": "Winter grass." }
-          ]
-        }
-      ]
-    }
-  ]
-}`), 0o644))
-
-	p, _, err := pack.Load(dir)
-
-	require.NoError(t, err)
-	require.Equal(t, "sprites/{target}.png", pack.DeployTemplate(p.Objects[0]))
+	updated := strings.Replace(string(data), old, replacement, 1)
+	require.NotEqual(t, string(data), updated, "fixture replacement did not match")
+	require.NoError(t, os.WriteFile(path, []byte(updated), 0o644))
 }

@@ -1,4 +1,4 @@
-// Package status renders manifest-V10 scope summaries and executable next actions.
+// Package status renders manifest-V11 scope summaries and executable next actions.
 package status
 
 import (
@@ -28,7 +28,27 @@ func Print(writer io.Writer, manifest *generate.Manifest, all []targets.Target, 
 			objects[target.ObjectID] = true
 		}
 	}
-	fmt.Fprintf(writer, "run_id: %s\nscope_targets: %d\n", manifest.RunID, len(selected))
+	fmt.Fprintf(
+		writer,
+		"run_id: %s\nconfig_sha256: %s\nstyle_guide_sha256: %s\nscope_targets: %d\nprovider_calls_remaining: %d\n",
+		manifest.RunID,
+		manifest.ConfigSHA256,
+		manifest.StyleGuideSHA256,
+		len(selected),
+		generate.ProviderCallsRemaining(manifest, selected),
+	)
+	for _, failure := range manifest.Failures {
+		if objects[failure.ObjectID] || targetObjectSelected(statics, failure.ObjectID) {
+			fmt.Fprintf(
+				writer,
+				"failure: object=%s stage=%s ambiguous=%t error=%s\n",
+				failure.ObjectID,
+				failure.Stage,
+				failure.Ambiguous,
+				failure.Error,
+			)
+		}
+	}
 	for _, status := range orderedStatuses() {
 		fmt.Fprintf(writer, "target_%s: %d\n", status, targetCounts[status])
 	}
@@ -54,8 +74,10 @@ func printUnit(writer io.Writer, manifest *generate.Manifest, objectID string) {
 		return
 	}
 	fmt.Fprintf(writer, "unit: %s state=%s\n", objectID, unit.Status)
+	printFindings(writer, unit.HardRejections, nil)
 	if master := manifest.Intermediates[unit.MasterID]; master != nil {
 		fmt.Fprintf(writer, "master: %s state=%s lineage=%s\n", master.ID, master.Status, master.Lineage)
+		printFindings(writer, master.HardRejections, master.Warnings)
 		printCandidate(writer, master)
 		for _, path := range artifactPaths(master.Artifacts) {
 			fmt.Fprintf(writer, "artifact: %s\n", path)
@@ -68,6 +90,7 @@ func printUnit(writer io.Writer, manifest *generate.Manifest, objectID string) {
 			continue
 		}
 		fmt.Fprintf(writer, "animation_board: %s state=%s lineage=%s\n", board.ID, board.Status, board.Lineage)
+		printFindings(writer, board.HardRejections, board.Warnings)
 		printCandidate(writer, board)
 		for _, path := range artifactPaths(board.Artifacts) {
 			fmt.Fprintf(writer, "artifact: %s\n", path)
@@ -98,6 +121,7 @@ func printStatic(writer io.Writer, manifest *generate.Manifest, target targets.T
 		return
 	}
 	fmt.Fprintf(writer, "static: %s state=%s\n", target.ID, state.Status)
+	printFindings(writer, state.HardRejections, state.Warnings)
 	if state.SourceCandidate != "" {
 		fmt.Fprintf(writer, "source_candidate: %s\n", state.SourceCandidate)
 	}
@@ -106,12 +130,47 @@ func printStatic(writer io.Writer, manifest *generate.Manifest, target targets.T
 	}
 	switch state.Status {
 	case generate.StatusAwaitingReview:
-		fmt.Fprintf(writer, "next: sprites-ai-gen review --run %s --object %s --status accepted\n", manifest.RunID, target.ObjectID)
+		fmt.Fprintf(
+			writer,
+			"next: sprites-ai-gen review --run %s %s --status accepted\n",
+			manifest.RunID,
+			scopeFlag(target),
+		)
 	case generate.StatusRejected:
-		fmt.Fprintf(writer, "next: sprites-ai-gen generate --run %s --object %s --force\n", manifest.RunID, target.ObjectID)
+		fmt.Fprintf(writer, "next: sprites-ai-gen generate --run auto %s\n", scopeFlag(target))
 	case generate.StatusAccepted:
-		fmt.Fprintf(writer, "next: sprites-ai-gen deploy --run %s --object %s --dry-run\n", manifest.RunID, target.ObjectID)
+		fmt.Fprintf(
+			writer,
+			"next: sprites-ai-gen deploy --run %s %s --dry-run\n",
+			manifest.RunID,
+			scopeFlag(target),
+		)
 	}
+}
+
+func printFindings(writer io.Writer, blockers, warnings []string) {
+	for _, blocker := range blockers {
+		fmt.Fprintf(writer, "blocker: %s\n", blocker)
+	}
+	for _, warning := range warnings {
+		fmt.Fprintf(writer, "warning: %s\n", warning)
+	}
+}
+
+func scopeFlag(target targets.Target) string {
+	if target.ObjectKind == targets.StyleGuideTargetID {
+		return "--style-guide"
+	}
+	return "--object " + target.ObjectID
+}
+
+func targetObjectSelected(selected []targets.Target, objectID string) bool {
+	for _, target := range selected {
+		if target.ObjectID == objectID {
+			return true
+		}
+	}
+	return false
 }
 
 func printCandidate(writer io.Writer, state *generate.IntermediateState) {
@@ -151,6 +210,10 @@ func artifactPaths(artifacts generate.ReviewArtifacts) []string {
 		artifacts.CompleteUnitSheetPath,
 		artifacts.ContactSheetPath,
 		artifacts.AnimationGIFPath,
+		artifacts.NativePreviewPath,
+		artifacts.PortraitPreviewPath,
+		artifacts.BattlefieldPreviewPath,
+		artifacts.TiledPreviewPath,
 	}
 	paths = append(paths, artifacts.AnimationBoardPaths...)
 	paths = append(paths, artifacts.AnimationGIFPaths...)
