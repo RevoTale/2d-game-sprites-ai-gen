@@ -48,6 +48,233 @@ func SemanticMasterLayout(directions int) (SemanticLayout, error) {
 	return semanticLayout(directions, columns)
 }
 
+// SemanticStaticSetLayout derives provider geometry from production canvas
+// sizes. Every target receives enough room at native 2x scale plus a real
+// chroma corridor; no per-part rescaling is required after extraction.
+func SemanticStaticSetLayout(sizes []image.Point) (SemanticLayout, error) {
+	if len(sizes) == 0 {
+		return SemanticLayout{}, fmt.Errorf("semantic static set requires at least one size")
+	}
+	maximumWidth, maximumHeight := 0, 0
+	for _, size := range sizes {
+		if size.X <= 0 || size.Y <= 0 {
+			return SemanticLayout{}, fmt.Errorf("semantic static set size must be positive")
+		}
+		maximumWidth = max(maximumWidth, size.X)
+		maximumHeight = max(maximumHeight, size.Y)
+	}
+	columns := int(math.Ceil(math.Sqrt(float64(len(sizes)))))
+	rows := (len(sizes) + columns - 1) / columns
+	spacing := roundUp(max(maximumWidth, maximumHeight)+64, 16)
+	width := roundUp(2*semanticOuterReserve+maximumWidth+(columns-1)*spacing, 16)
+	height := roundUp(2*semanticOuterReserve+maximumHeight+(rows-1)*spacing, 16)
+	layout := SemanticLayout{
+		CanvasWidth: width, CanvasHeight: height,
+		Columns: columns, Rows: rows, AnchorSpacing: spacing,
+		Anchors: make([]image.Point, len(sizes)),
+	}
+	left := semanticOuterReserve + maximumWidth/2
+	top := semanticOuterReserve + maximumHeight
+	for index := range layout.Anchors {
+		layout.Anchors[index] = image.Pt(
+			left+(index%columns)*spacing,
+			top+(index/columns)*spacing,
+		)
+	}
+	return layout, nil
+}
+
+// WriteSemanticSizedPlaceholderBoard places smaller neutral silhouettes inside
+// the exact production-sized regions. The inset gives generation room without
+// changing the relative target canvases.
+func WriteSemanticSizedPlaceholderBoard(
+	outputPath string,
+	layout SemanticLayout,
+	sizes []image.Point,
+	inset int,
+) error {
+	bounds, err := semanticSizedBounds(layout, sizes, inset)
+	if err != nil {
+		return err
+	}
+	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
+	marker := color.NRGBA{R: 82, G: 86, B: 94, A: 255}
+	for _, markerBounds := range bounds {
+		draw.Draw(board, markerBounds, image.NewUniform(marker), image.Point{}, draw.Src)
+	}
+	return writePNG(outputPath, board)
+}
+
+// WriteSemanticSizedEditMask exposes each target's exact safe production
+// rectangle while keeping every neighboring region opaque and disconnected.
+func WriteSemanticSizedEditMask(
+	outputPath string,
+	layout SemanticLayout,
+	sizes []image.Point,
+) error {
+	if len(sizes) != len(layout.Anchors) {
+		return fmt.Errorf("semantic sized mask requires one size per anchor")
+	}
+	canvas := image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight)
+	mask := image.NewNRGBA(canvas)
+	draw.Draw(mask, canvas, image.NewUniform(color.NRGBA{R: 255, G: 255, B: 255, A: 255}), image.Point{}, draw.Src)
+	regions := make([]image.Rectangle, len(sizes))
+	for index, size := range sizes {
+		guard := max(1, min(size.X, size.Y)/32)
+		bounds, boundsErr := semanticSizedBounds(
+			layout,
+			[]image.Point{size},
+			guard,
+		)
+		if boundsErr != nil {
+			return boundsErr
+		}
+		width, height := bounds[0].Dx(), bounds[0].Dy()
+		anchor := layout.Anchors[index]
+		region := image.Rect(
+			anchor.X-width/2,
+			anchor.Y-height,
+			anchor.X+(width+1)/2,
+			anchor.Y,
+		)
+		if !region.In(canvas.Inset(semanticCanvasGuard)) {
+			return fmt.Errorf("semantic edit region %02d exceeds safe canvas", index)
+		}
+		for previous := range index {
+			if region.Overlaps(regions[previous]) {
+				return fmt.Errorf("semantic edit regions %02d and %02d overlap", previous, index)
+			}
+		}
+		regions[index] = region
+		draw.Draw(mask, region, image.NewUniform(color.NRGBA{}), image.Point{}, draw.Src)
+	}
+	return writePNG(outputPath, mask)
+}
+
+func semanticSizedBounds(
+	layout SemanticLayout,
+	sizes []image.Point,
+	inset int,
+) ([]image.Rectangle, error) {
+	if len(sizes) == 0 || inset < 0 {
+		return nil, fmt.Errorf("semantic sized bounds require positive sizes and non-negative inset")
+	}
+	bounds := make([]image.Rectangle, len(sizes))
+	for index, size := range sizes {
+		width, height := size.X-2*inset, size.Y-2*inset
+		if width <= 0 || height <= 0 {
+			return nil, fmt.Errorf("semantic sized bounds inset exceeds size %dx%d", size.X, size.Y)
+		}
+		anchorIndex := index
+		if len(sizes) == 1 && len(layout.Anchors) != 1 {
+			anchorIndex = 0
+		}
+		if anchorIndex >= len(layout.Anchors) {
+			return nil, fmt.Errorf("semantic sized bounds require one anchor per size")
+		}
+		anchor := layout.Anchors[anchorIndex]
+		bounds[index] = image.Rect(
+			anchor.X-width/2,
+			anchor.Y-height,
+			anchor.X+(width+1)/2,
+			anchor.Y,
+		)
+	}
+	return bounds, nil
+}
+
+// WriteSemanticPlaceholderBoard gives a provider visible one-to-one placement
+// and relative-extent evidence when no existing subject images exist yet.
+// Neutral silhouettes are protocol markers, not visual references.
+func WriteSemanticPlaceholderBoard(
+	outputPath string,
+	layout SemanticLayout,
+	sizes []image.Point,
+	maximumExtent int,
+) error {
+	bounds, err := semanticPlaceholderBounds(layout, sizes, maximumExtent)
+	if err != nil {
+		return err
+	}
+	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
+	marker := color.NRGBA{R: 82, G: 86, B: 94, A: 255}
+	for _, markerBounds := range bounds {
+		draw.Draw(board, markerBounds, image.NewUniform(marker), image.Point{}, draw.Src)
+	}
+	return writePNG(outputPath, board)
+}
+
+// WriteSemanticEditMask exposes one guarded editable region around each
+// protocol marker. Transparent pixels are editable according to the OpenAI
+// Image Edits contract; opaque pixels preserve the chroma separation.
+func WriteSemanticEditMask(
+	outputPath string,
+	layout SemanticLayout,
+	sizes []image.Point,
+	maximumExtent, padding int,
+) error {
+	if padding <= 0 {
+		return fmt.Errorf("semantic edit mask padding must be positive")
+	}
+	markerBounds, err := semanticPlaceholderBounds(layout, sizes, maximumExtent)
+	if err != nil {
+		return err
+	}
+	canvas := image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight)
+	mask := image.NewNRGBA(canvas)
+	draw.Draw(mask, canvas, image.NewUniform(color.NRGBA{R: 255, G: 255, B: 255, A: 255}), image.Point{}, draw.Src)
+	regions := make([]image.Rectangle, len(markerBounds))
+	for index, bounds := range markerBounds {
+		region := bounds.Inset(-padding)
+		if !region.In(canvas.Inset(semanticCanvasGuard)) {
+			return fmt.Errorf("semantic edit region %02d exceeds safe canvas", index)
+		}
+		for previous := range index {
+			if region.Overlaps(regions[previous]) {
+				return fmt.Errorf("semantic edit regions %02d and %02d overlap", previous, index)
+			}
+		}
+		regions[index] = region
+		draw.Draw(mask, region, image.NewUniform(color.NRGBA{}), image.Point{}, draw.Src)
+	}
+	return writePNG(outputPath, mask)
+}
+
+func semanticPlaceholderBounds(
+	layout SemanticLayout,
+	sizes []image.Point,
+	maximumExtent int,
+) ([]image.Rectangle, error) {
+	if len(sizes) != len(layout.Anchors) || maximumExtent <= 0 {
+		return nil, fmt.Errorf("semantic placeholder board requires one positive size per anchor")
+	}
+	maximumWidth, maximumHeight := 0, 0
+	for _, size := range sizes {
+		if size.X <= 0 || size.Y <= 0 {
+			return nil, fmt.Errorf("semantic placeholder size must be positive")
+		}
+		maximumWidth = max(maximumWidth, size.X)
+		maximumHeight = max(maximumHeight, size.Y)
+	}
+	scale := min(
+		float64(maximumExtent)/float64(maximumWidth),
+		float64(maximumExtent)/float64(maximumHeight),
+	)
+	bounds := make([]image.Rectangle, len(sizes))
+	for index, size := range sizes {
+		width := max(1, int(math.Round(float64(size.X)*scale)))
+		height := max(1, int(math.Round(float64(size.Y)*scale)))
+		anchor := layout.Anchors[index]
+		bounds[index] = image.Rect(
+			anchor.X-width/2,
+			anchor.Y-height,
+			anchor.X+(width+1)/2,
+			anchor.Y,
+		)
+	}
+	return bounds, nil
+}
+
 func semanticLayout(count, columns int) (SemanticLayout, error) {
 	if count <= 0 || columns <= 0 || columns > count {
 		return SemanticLayout{}, fmt.Errorf("invalid semantic layout count=%d columns=%d", count, columns)
@@ -339,6 +566,77 @@ func assignComponentsToAnchors(
 	layout SemanticLayout,
 ) ([][]semanticComponent, error) {
 	groups := make([][]semanticComponent, len(layout.Anchors))
+	maximumArea := 0
+	for _, component := range components {
+		maximumArea = max(maximumArea, component.area)
+	}
+	primary := make([]semanticComponent, 0, len(components))
+	detached := make([]semanticComponent, 0)
+	for _, component := range components {
+		if component.area*16 < maximumArea {
+			detached = append(detached, component)
+			continue
+		}
+		primary = append(primary, component)
+	}
+	if len(primary) == len(layout.Anchors) {
+		assignPrimaryComponentsInReadingOrder(groups, primary, layout)
+	} else if err := assignPrimaryComponentsByAnchor(groups, primary, layout); err != nil {
+		return nil, err
+	}
+	for anchorIndex := range groups {
+		if len(groups[anchorIndex]) == 0 {
+			return nil, fmt.Errorf(
+				"semantic anchor %02d has no primary body core",
+				anchorIndex,
+			)
+		}
+	}
+	for _, component := range detached {
+		owner, err := detachedSemanticComponentOwner(component, groups, layout)
+		if err != nil {
+			return nil, err
+		}
+		groups[owner] = append(groups[owner], component)
+	}
+	for anchorIndex := range groups {
+		primaryIndex := semanticPrimaryComponent(
+			groups[anchorIndex],
+			layout.Anchors[anchorIndex],
+		)
+		groups[anchorIndex][0], groups[anchorIndex][primaryIndex] =
+			groups[anchorIndex][primaryIndex], groups[anchorIndex][0]
+	}
+	return groups, nil
+}
+
+func assignPrimaryComponentsInReadingOrder(
+	groups [][]semanticComponent,
+	components []semanticComponent,
+	layout SemanticLayout,
+) {
+	sort.SliceStable(components, func(first, second int) bool {
+		return components[first].pivot.Y < components[second].pivot.Y
+	})
+	offset := 0
+	for row := 0; row < layout.Rows && offset < len(components); row++ {
+		count := min(layout.Columns, len(components)-offset)
+		rowComponents := components[offset : offset+count]
+		sort.SliceStable(rowComponents, func(first, second int) bool {
+			return rowComponents[first].pivot.X < rowComponents[second].pivot.X
+		})
+		for column, component := range rowComponents {
+			groups[offset+column] = append(groups[offset+column], component)
+		}
+		offset += count
+	}
+}
+
+func assignPrimaryComponentsByAnchor(
+	groups [][]semanticComponent,
+	components []semanticComponent,
+	layout SemanticLayout,
+) error {
 	maximumDistance := float64(layout.AnchorSpacing) * 0.75
 	for _, component := range components {
 		best, second := -1, -1
@@ -353,28 +651,89 @@ func assignComponentsToAnchors(
 			}
 		}
 		if best < 0 || bestDistance > maximumDistance {
-			return nil, fmt.Errorf("semantic component %v has no pose ownership", component.bounds)
+			return fmt.Errorf("semantic component %v has no pose ownership", component.bounds)
 		}
 		if second >= 0 && math.Abs(secondDistance-bestDistance) <= 1e-9 {
-			return nil, fmt.Errorf("semantic component %v has ambiguous ownership", component.bounds)
+			return fmt.Errorf("semantic component %v has ambiguous ownership", component.bounds)
 		}
 		groups[best] = append(groups[best], component)
 	}
-	for anchorIndex := range groups {
-		if len(groups[anchorIndex]) == 0 {
-			return nil, fmt.Errorf(
-				"semantic anchor %02d has no primary body core",
-				anchorIndex,
-			)
+	return nil
+}
+
+func detachedSemanticComponentOwner(
+	component semanticComponent,
+	groups [][]semanticComponent,
+	layout SemanticLayout,
+) (int, error) {
+	best, second := -1, -1
+	bestDistance, secondDistance := math.MaxFloat64, math.MaxFloat64
+	for anchorIndex, anchor := range layout.Anchors {
+		distance := pointDistance(component.pivot, anchor)
+		if distance < bestDistance {
+			second, secondDistance = best, bestDistance
+			best, bestDistance = anchorIndex, distance
+		} else if distance < secondDistance {
+			second, secondDistance = anchorIndex, distance
 		}
-		primary := semanticPrimaryComponent(
-			groups[anchorIndex],
-			layout.Anchors[anchorIndex],
-		)
-		groups[anchorIndex][0], groups[anchorIndex][primary] =
-			groups[anchorIndex][primary], groups[anchorIndex][0]
 	}
-	return groups, nil
+	if bestDistance <= float64(layout.AnchorSpacing)*0.75 {
+		if second >= 0 && math.Abs(secondDistance-bestDistance) <= 1e-9 {
+			return -1, fmt.Errorf("semantic component %v has ambiguous ownership", component.bounds)
+		}
+		return best, nil
+	}
+	return nearbySemanticGroupOwner(component, groups, layout.AnchorSpacing)
+}
+
+// nearbySemanticGroupOwner handles small detached material such as one loose
+// stone beside a rubble pile. Anchor distance alone is insufficient at an
+// intentionally unused trailing grid position, so ownership may fall back to
+// direct, unambiguous proximity to an established group. Large components are
+// never recovered through this path because they may be an extra subject.
+func nearbySemanticGroupOwner(
+	component semanticComponent,
+	groups [][]semanticComponent,
+	anchorSpacing int,
+) (int, error) {
+	const maximumAreaRatio = 16
+	maximumGap := float64(anchorSpacing) / 8
+	best, second := -1, -1
+	bestDistance, secondDistance := math.MaxFloat64, math.MaxFloat64
+	for groupIndex, group := range groups {
+		if len(group) == 0 {
+			continue
+		}
+		bounds := group[0].bounds
+		maximumArea := group[0].area
+		for _, member := range group[1:] {
+			bounds = bounds.Union(member.bounds)
+			maximumArea = max(maximumArea, member.area)
+		}
+		if component.area*maximumAreaRatio >= maximumArea {
+			continue
+		}
+		distance := rectangleDistance(component.bounds, bounds)
+		if distance < bestDistance {
+			second, secondDistance = best, bestDistance
+			best, bestDistance = groupIndex, distance
+		} else if distance < secondDistance {
+			second, secondDistance = groupIndex, distance
+		}
+	}
+	if best < 0 || bestDistance > maximumGap {
+		return -1, fmt.Errorf("semantic component %v has no pose ownership", component.bounds)
+	}
+	if second >= 0 && math.Abs(secondDistance-bestDistance) <= 1e-9 {
+		return -1, fmt.Errorf("semantic component %v has ambiguous ownership", component.bounds)
+	}
+	return best, nil
+}
+
+func rectangleDistance(first, second image.Rectangle) float64 {
+	dx := max(0, max(second.Min.X-first.Max.X, first.Min.X-second.Max.X))
+	dy := max(0, max(second.Min.Y-first.Max.Y, first.Min.Y-second.Max.Y))
+	return math.Hypot(float64(dx), float64(dy))
 }
 
 // semanticPrimaryComponent selects the grounded component for body
@@ -385,11 +744,16 @@ func semanticPrimaryComponent(
 	anchor image.Point,
 ) int {
 	const groundedTolerance = semanticAnchorSpacing / 12
-	maximumBottom := components[0].pivot.Y
-	maximumArea := components[0].area
-	for _, component := range components[1:] {
-		maximumBottom = max(maximumBottom, component.pivot.Y)
+	maximumArea := 0
+	for _, component := range components {
 		maximumArea = max(maximumArea, component.area)
+	}
+	maximumBottom := 0
+	for _, component := range components {
+		if component.area*16 < maximumArea {
+			continue
+		}
+		maximumBottom = max(maximumBottom, component.pivot.Y)
 	}
 	selected := -1
 	for index, component := range components {

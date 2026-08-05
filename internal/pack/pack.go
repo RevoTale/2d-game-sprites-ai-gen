@@ -14,12 +14,13 @@ import (
 )
 
 const (
-	Version                       = 5
+	Version                       = 6
 	DefaultOutputDir              = "output"
 	DefaultStaticDeployTemplate   = "sprites/{target}.png"
 	DefaultAnimatedDeployTemplate = "frames/units/{object}/{animation}/{direction}/{frame}.png"
 	KindAnimated                  = "animated"
 	KindStatic                    = "static"
+	KindStaticSet                 = "static-set"
 	RenderModeIsolated            = "isolated"
 	RenderModeOpaqueTile          = "opaque-tile"
 	RegistrationModeGrounded      = "grounded"
@@ -108,19 +109,43 @@ type Reference struct {
 }
 
 type Object struct {
-	ID            string      `json:"id"`
-	Kind          string      `json:"kind"`
-	Archetype     string      `json:"archetype,omitempty"`
-	Family        string      `json:"family,omitempty"`
-	Description   string      `json:"description"`
-	IdentityLocks []string    `json:"identityLocks,omitempty"`
-	RenderMode    string      `json:"renderMode,omitempty"`
-	Registration  string      `json:"registration"`
-	Size          Size        `json:"size"`
-	References    []Reference `json:"references,omitempty"`
-	Directions    []Direction `json:"directions,omitempty"`
-	Animations    []Animation `json:"animations,omitempty"`
-	Deploy        Deploy      `json:"deploy,omitempty"`
+	ID            string          `json:"id"`
+	Kind          string          `json:"kind"`
+	Archetype     string          `json:"archetype,omitempty"`
+	Family        string          `json:"family,omitempty"`
+	Description   string          `json:"description"`
+	MagicSources  *[]MagicSource  `json:"magicSources"`
+	IdentityLocks []string        `json:"identityLocks,omitempty"`
+	RenderMode    string          `json:"renderMode,omitempty"`
+	Registration  string          `json:"registration"`
+	Size          Size            `json:"size"`
+	References    []Reference     `json:"references,omitempty"`
+	Directions    []Direction     `json:"directions,omitempty"`
+	Animations    []Animation     `json:"animations,omitempty"`
+	Deploy        Deploy          `json:"deploy,omitempty"`
+	Parts         []StaticSetPart `json:"parts,omitempty"`
+}
+
+// MagicSource explains one bounded supernatural feature. Its explicit cause
+// prevents generic prompt styling from inventing unrelated magical ornament.
+type MagicSource struct {
+	ID          string   `json:"id"`
+	Description string   `json:"description"`
+	Location    string   `json:"location"`
+	Palette     string   `json:"palette"`
+	Expression  string   `json:"expression"`
+	Limits      []string `json:"limits"`
+}
+
+// StaticSetPart is one deployable member of a visually coupled atomic set.
+// Its role and logical size are pack facts; provider-board geometry remains
+// generator-owned.
+type StaticSetPart struct {
+	ID          string `json:"id"`
+	Role        string `json:"role"`
+	Description string `json:"description"`
+	Size        Size   `json:"size"`
+	Deploy      Deploy `json:"deploy"`
 }
 
 type Size struct {
@@ -185,10 +210,10 @@ func Decode(r io.Reader) (*Pack, error) {
 
 func Validate(dir string, p *Pack) error {
 	if p.Version >= 1 && p.Version < Version {
-		return fmt.Errorf("sprites.json v%d is unsupported; migrate the pack to v5", p.Version)
+		return fmt.Errorf("sprites.json v%d is unsupported; migrate the pack to v6", p.Version)
 	}
 	if p.Version != Version {
-		return fmt.Errorf("sprites.json v%d is unsupported; expected v5", p.Version)
+		return fmt.Errorf("sprites.json v%d is unsupported; expected v6", p.Version)
 	}
 	referenceIDs := map[string]string{}
 	if err := validateStyle(dir, p, referenceIDs); err != nil {
@@ -361,7 +386,10 @@ func validateObject(
 	if err := requireText("object "+obj.ID+" description", obj.Description); err != nil {
 		return err
 	}
-	if obj.Size.Width <= 0 || obj.Size.Height <= 0 {
+	if err := validateMagicSources(obj); err != nil {
+		return err
+	}
+	if obj.Kind != KindStaticSet && (obj.Size.Width <= 0 || obj.Size.Height <= 0) {
 		return fmt.Errorf("object %q size must be positive", obj.ID)
 	}
 	if err := validateRenderMode(obj); err != nil {
@@ -375,6 +403,9 @@ func validateObject(
 	}
 	switch obj.Kind {
 	case KindAnimated:
+		if len(obj.Parts) != 0 {
+			return fmt.Errorf("animated object %q must not define parts", obj.ID)
+		}
 		if _, ok := p.Style.Units.Archetypes[obj.Archetype]; !ok {
 			return fmt.Errorf("animated object %q uses unknown archetype %q", obj.ID, obj.Archetype)
 		}
@@ -391,6 +422,9 @@ func validateObject(
 			return fmt.Errorf("animated object %q must define animations", obj.ID)
 		}
 	case KindStatic:
+		if len(obj.Parts) != 0 {
+			return fmt.Errorf("static object %q must not define parts", obj.ID)
+		}
 		if _, ok := p.Style.Terrain.Families[obj.Family]; !ok {
 			return fmt.Errorf("static object %q uses unknown terrain family %q", obj.ID, obj.Family)
 		}
@@ -400,14 +434,116 @@ func validateObject(
 		if len(obj.Directions) != 0 || len(obj.Animations) != 0 {
 			return fmt.Errorf("static object %q must not define directions or animations", obj.ID)
 		}
+	case KindStaticSet:
+		if _, ok := p.Style.Terrain.Families[obj.Family]; !ok {
+			return fmt.Errorf("static set %q uses unknown terrain family %q", obj.ID, obj.Family)
+		}
+		if obj.Archetype != "" {
+			return fmt.Errorf("static set %q must not define archetype", obj.ID)
+		}
+		if obj.Size != (Size{}) {
+			return fmt.Errorf("static set %q must not define object size", obj.ID)
+		}
+		if obj.Deploy != (Deploy{}) {
+			return fmt.Errorf("static set %q must not define object deploy", obj.ID)
+		}
+		if len(obj.Directions) != 0 || len(obj.Animations) != 0 {
+			return fmt.Errorf("static set %q must not define directions or animations", obj.ID)
+		}
+		if err := validateStaticSet(obj); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("object %q kind %q is unsupported; expected %q or %q", obj.ID, obj.Kind, KindAnimated, KindStatic)
+		return fmt.Errorf(
+			"object %q kind %q is unsupported; expected %q, %q, or %q",
+			obj.ID,
+			obj.Kind,
+			KindAnimated,
+			KindStatic,
+			KindStaticSet,
+		)
 	}
 	if err := validateAnimations(obj); err != nil {
 		return err
 	}
-	if err := validateDeployTemplate(obj); err != nil {
-		return fmt.Errorf("object %q deploy template: %w", obj.ID, err)
+	if obj.Kind != KindStaticSet {
+		if err := validateDeployTemplate(obj); err != nil {
+			return fmt.Errorf("object %q deploy template: %w", obj.ID, err)
+		}
+	}
+	return nil
+}
+
+func validateStaticSet(obj Object) error {
+	if len(obj.Parts) < 2 {
+		return fmt.Errorf("static set %q must contain at least two parts", obj.ID)
+	}
+	seen := make(map[string]struct{}, len(obj.Parts))
+	for _, part := range obj.Parts {
+		if err := validateID("static set part", part.ID); err != nil {
+			return fmt.Errorf("static set %q: %w", obj.ID, err)
+		}
+		if _, exists := seen[part.ID]; exists {
+			return fmt.Errorf("static set %q duplicate part id %q", obj.ID, part.ID)
+		}
+		seen[part.ID] = struct{}{}
+		if err := requireText("static set "+obj.ID+" part "+part.ID+" role", part.Role); err != nil {
+			return err
+		}
+		if err := requireText("static set "+obj.ID+" part "+part.ID+" description", part.Description); err != nil {
+			return err
+		}
+		if part.Size.Width <= 0 || part.Size.Height <= 0 {
+			return fmt.Errorf("static set %q part %q size must be positive", obj.ID, part.ID)
+		}
+		if err := requireText("static set "+obj.ID+" part "+part.ID+" deploy pathTemplate", part.Deploy.PathTemplate); err != nil {
+			return err
+		}
+		partObject := Object{Kind: KindStatic, Deploy: part.Deploy}
+		if err := validateDeployTemplate(partObject); err != nil {
+			return fmt.Errorf("static set %q part %q deploy template: %w", obj.ID, part.ID, err)
+		}
+	}
+	return nil
+}
+
+func validateMagicSources(obj Object) error {
+	if obj.MagicSources == nil {
+		return fmt.Errorf("object %q magicSources is required", obj.ID)
+	}
+	seen := make(map[string]struct{}, len(*obj.MagicSources))
+	for _, source := range *obj.MagicSources {
+		if err := validateID("magic source", source.ID); err != nil {
+			return fmt.Errorf("object %q: %w", obj.ID, err)
+		}
+		if _, exists := seen[source.ID]; exists {
+			return fmt.Errorf("object %q duplicate magic source id %q", obj.ID, source.ID)
+		}
+		seen[source.ID] = struct{}{}
+		fields := []struct {
+			name  string
+			value string
+		}{
+			{name: "description", value: source.Description},
+			{name: "location", value: source.Location},
+			{name: "palette", value: source.Palette},
+			{name: "expression", value: source.Expression},
+		}
+		for _, field := range fields {
+			name := fmt.Sprintf(
+				"object %s magic source %s %s",
+				obj.ID,
+				source.ID,
+				field.name,
+			)
+			if err := requireText(name, field.value); err != nil {
+				return err
+			}
+		}
+		name := fmt.Sprintf("object %s magic source %s limits", obj.ID, source.ID)
+		if err := requireTexts(name, source.Limits); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -545,7 +681,7 @@ func validateRegistration(obj Object) error {
 				RegistrationModeCentered,
 			)
 		}
-	case KindStatic:
+	case KindStatic, KindStaticSet:
 		if EffectiveRenderMode(obj) == RenderModeOpaqueTile {
 			if obj.Registration != RegistrationModeCanvas {
 				return fmt.Errorf("opaque-tile object %q registration must be %q", obj.ID, RegistrationModeCanvas)

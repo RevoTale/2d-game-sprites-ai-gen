@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/generate"
@@ -14,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStatusPrintsV11UnitStagesArtifactsAndReviewAction(t *testing.T) {
+func TestStatusPrintsV12UnitStagesArtifactsAndReviewAction(t *testing.T) {
 	dir := testkit.WriteFullUnitPack(t)
 	p, all := testkit.LoadTargets(t, dir)
 	outputDir := filepath.Join(dir, p.OutputDir)
@@ -114,4 +115,27 @@ func TestStaticStatusRemainsSupported(t *testing.T) {
 	require.Contains(t, output.String(), "provider_calls_remaining: 0")
 	require.Contains(t, output.String(), "source_candidate: 002/01")
 	require.Contains(t, output.String(), "next: sprites-ai-gen review --run run --object terrain-rock --status accepted")
+}
+
+func TestStaticSetStatusPrintsOneAggregateAndPartDensity(t *testing.T) {
+	dir := testkit.WriteStaticSetPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, p.OutputDir)
+	_, err := generate.Run(context.Background(), all, &testkit.StaticSetProvider{}, generate.Options{
+		OutputDir: outputDir, DeployDir: filepath.Join(dir, p.DeployDir), RunID: "run",
+		Filter: targets.Filter{Object: "fortification"},
+	})
+	require.NoError(t, err)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	var output bytes.Buffer
+
+	require.NoError(t, status.Print(&output, manifest, all, targets.Filter{Object: "fortification"}))
+
+	require.Equal(t, 1, strings.Count(output.String(), "static_set: fortification"))
+	require.Contains(t, output.String(), "state=awaiting_review")
+	require.Contains(t, output.String(), "part: fortification-part-tall-horizontal logical=96x80 intrinsic=192x160 density=2")
+	require.Contains(t, output.String(), "part: fortification-part-collapse-left logical=80x64 intrinsic=160x128 density=2")
+	require.Contains(t, output.String(), "next: sprites-ai-gen review --run run --object fortification --status accepted")
+	require.NotContains(t, output.String(), "static: fortification-part-")
 }

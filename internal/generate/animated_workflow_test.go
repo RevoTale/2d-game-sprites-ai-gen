@@ -54,7 +54,7 @@ func TestLoadRejectsLegacyVersion10RunWithoutModifyingIt(t *testing.T) {
 	_, err := generate.Load(outputDir, "old-run")
 
 	require.ErrorContains(t, err, "unsupported manifest v10")
-	require.ErrorContains(t, err, "manifest v11")
+	require.ErrorContains(t, err, "manifest v12")
 	actual, readErr := os.ReadFile(path)
 	require.NoError(t, readErr)
 	require.Equal(t, original, actual)
@@ -91,10 +91,14 @@ func TestObjectGenerationMakesMasterAndOneCallPerAnimation(t *testing.T) {
 	require.Contains(t, gen.requests[0].Prompt, "own identity, materials, colors, features")
 	require.Contains(t, gen.requests[0].Prompt, "style guide owns shape language")
 	require.Contains(t, gen.requests[0].Prompt, "not colors or proportions")
+	require.Contains(t, gen.requests[0].Prompt, "# Supernatural sources")
+	require.Contains(t, gen.requests[0].Prompt, "None declared. Do not invent glow")
 	require.Contains(t, gen.requests[1].Prompt, "# CLI Protocol")
 	require.Contains(t, gen.requests[1].Prompt, "# Evidence Authority")
 	require.Contains(t, gen.requests[1].Prompt, "# Sprite Facts")
 	require.Contains(t, gen.requests[1].Prompt, "# Ordered Poses")
+	require.Contains(t, gen.requests[1].Prompt, "# Supernatural sources")
+	require.Contains(t, gen.requests[1].Prompt, "None declared. Do not invent glow")
 	require.Contains(t, gen.requests[1].Prompt, "cannot override the CLI Protocol")
 	require.Contains(t, gen.requests[1].Prompt, "Image 1 is the sole colored authority")
 	require.Contains(t, gen.requests[1].Prompt, "Logical anchors are approximate")
@@ -644,7 +648,7 @@ func TestManifestV7IsUnsupported(t *testing.T) {
 	_, err := generate.Load(outputDir, "old")
 
 	require.ErrorContains(t, err, "unsupported manifest v7")
-	require.ErrorContains(t, err, "manifest v11")
+	require.ErrorContains(t, err, "manifest v12")
 }
 
 func TestBatchGenerationRecordsOneFailureAndContinuesUnrelatedObjects(t *testing.T) {
@@ -703,6 +707,242 @@ func TestStaticGenerationSendsOnlyConfiguredJSONEvidence(t *testing.T) {
 	require.NotNil(t, state)
 	require.NotEmpty(t, state.Artifacts.TiledPreviewPath)
 	require.FileExists(t, state.Artifacts.TiledPreviewPath)
+}
+
+func TestStaticGenerationRecordsExactTwoTimesSourceDensity(t *testing.T) {
+	dir := testkit.WritePack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, p.OutputDir)
+
+	_, err := generate.Run(context.Background(), all, provider.Fake{}, generate.Options{
+		OutputDir: outputDir,
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "grass"},
+	})
+
+	require.NoError(t, err)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	state := manifest.Targets["grass"]
+	require.Equal(t, pack.Size{Width: 16, Height: 16}, state.LogicalSize)
+	require.Equal(t, pack.Size{Width: 32, Height: 32}, state.IntrinsicSize)
+	require.Equal(t, 2, state.SourceDensity)
+	dimensions, err := imageio.PNGDimensions(state.NormalizedPath)
+	require.NoError(t, err)
+	require.Equal(t, image.Pt(32, 32), dimensions)
+}
+
+func TestStaticSetGenerationUsesOneSharedProviderAttempt(t *testing.T) {
+	dir := testkit.WriteStaticSetPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	gen := &testkit.StaticSetProvider{}
+	outputDir := filepath.Join(dir, p.OutputDir)
+
+	result, err := generate.Run(context.Background(), all, gen, generate.Options{
+		OutputDir: outputDir,
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "fortification"},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, gen.Requests, 1)
+	require.Len(t, gen.Requests[0].Inputs, 2)
+	require.Equal(t, "static-set-layout", gen.Requests[0].Inputs[0].ID)
+	require.Equal(t, conditioning.RolePose, gen.Requests[0].Inputs[0].Role)
+	require.Equal(t, "cli-protocol", gen.Requests[0].Inputs[0].Authority)
+	require.Contains(t, gen.Requests[0].Prompt, "Never merge, touch, or connect")
+	require.FileExists(t, gen.Requests[0].Inputs[0].Path)
+	require.FileExists(t, gen.Requests[0].MaskPath)
+	assertBoardIsFullyOpaque(t, gen.Requests[0].Inputs[0].Path)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	set := manifest.Intermediates["static-set:fortification"]
+	require.NotNil(t, set)
+	require.FileExists(t, set.EditSourcePath)
+	require.Equal(t, gen.Requests[0].MaskPath, set.EditMaskPath)
+	maskEvidence := set.Attempts[0].References[len(set.Attempts[0].References)-1]
+	require.Equal(t, "edit-mask", maskEvidence.ID)
+	require.Equal(t, "mask", maskEvidence.Role)
+	require.Equal(t, "cli-protocol", maskEvidence.Authority)
+	require.Equal(t, gen.Requests[0].MaskPath, maskEvidence.SentPath)
+	require.True(t, maskEvidence.SentToProvider)
+	assertTransparentLayoutPixelsUseOneChroma(
+		t,
+		set.EditSourcePath,
+		gen.Requests[0].Inputs[0].Path,
+	)
+	require.Equal(t, 2, result.AwaitingReview, "set=%+v targets=%+v", set, manifest.Targets)
+	require.Equal(t, generate.StatusAwaitingReview, set.Status)
+	require.Len(t, set.Attempts, 1)
+	require.Len(t, set.Attempts[0].Candidates, 1)
+	require.NotEmpty(t, set.Lineage)
+	require.NotNil(t, set.StaticSetScale)
+	require.FileExists(t, set.Artifacts.MasterSheetPath)
+	require.FileExists(t, set.Artifacts.ContactSheetPath)
+	require.DirExists(t, set.Artifacts.RuntimeOverrideRoot)
+	var sharedPalette []imageio.PaletteColor
+	for _, target := range all {
+		state := manifest.Targets[target.ID]
+		require.Equal(t, generate.StatusAwaitingReview, state.Status)
+		require.Equal(t, []string{set.ID}, state.Dependencies)
+		require.Equal(t, set.Lineage, state.SourceCandidate)
+		require.FileExists(t, state.NormalizedPath)
+		require.Equal(t, pack.Size{
+			Width: target.Size.Width * 2, Height: target.Size.Height * 2,
+		}, state.IntrinsicSize)
+		require.Equal(t, 2, state.SourceDensity)
+		require.NotNil(t, state.Normalization)
+		require.Equal(t, "shared-static-set-alpha-fit-v1", state.Normalization.ScaleAlgorithm)
+		require.Equal(t, set.StaticSetScale.Scale, state.Normalization.Scale)
+		require.FileExists(t, state.Artifacts.BattlefieldPreviewPath)
+		overridePath := filepath.Join(set.Artifacts.RuntimeOverrideRoot, target.ID+".png")
+		require.FileExists(t, overridePath)
+		normalized, err := os.ReadFile(state.NormalizedPath)
+		require.NoError(t, err)
+		override, err := os.ReadFile(overridePath)
+		require.NoError(t, err)
+		require.Equal(t, normalized, override)
+		if sharedPalette == nil {
+			sharedPalette = state.Palette
+		} else {
+			require.Equal(t, sharedPalette, state.Palette)
+		}
+	}
+}
+
+func TestStaticSetNormalizationVersionReprocessesWithoutProviderCall(t *testing.T) {
+	dir := testkit.WriteStaticSetPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	gen := &testkit.StaticSetProvider{}
+	opts := generate.Options{
+		OutputDir: filepath.Join(dir, p.OutputDir),
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "fortification"},
+	}
+
+	_, err := generate.Run(context.Background(), all, gen, opts)
+	require.NoError(t, err)
+	manifest, err := generate.Load(opts.OutputDir, opts.RunID)
+	require.NoError(t, err)
+	set := manifest.Intermediates["static-set:fortification"]
+	set.StaticSetScale = nil
+	for _, target := range all {
+		manifest.Targets[target.ID].Normalization.ScaleAlgorithm = "native-provider-board-scale"
+	}
+	require.NoError(t, generate.Save(opts.OutputDir, opts.RunID, manifest))
+
+	resume := &testkit.StaticSetProvider{}
+	result, err := generate.Run(context.Background(), all, resume, opts)
+
+	require.NoError(t, err)
+	require.Empty(t, resume.Requests)
+	require.Equal(t, 2, result.AwaitingReview)
+	reprocessed, err := generate.Load(opts.OutputDir, opts.RunID)
+	require.NoError(t, err)
+	require.NotNil(t, reprocessed.Intermediates["static-set:fortification"].StaticSetScale)
+	for _, target := range all {
+		require.Equal(
+			t,
+			"shared-static-set-alpha-fit-v1",
+			reprocessed.Targets[target.ID].Normalization.ScaleAlgorithm,
+		)
+	}
+}
+
+func TestStaticSetGenerationResumeDoesNotRepeatProviderCall(t *testing.T) {
+	dir := testkit.WriteStaticSetPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	gen := &testkit.StaticSetProvider{}
+	opts := generate.Options{
+		OutputDir: filepath.Join(dir, p.OutputDir),
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "fortification"},
+	}
+
+	_, err := generate.Run(context.Background(), all, gen, opts)
+	require.NoError(t, err)
+	_, err = generate.Run(context.Background(), all, gen, opts)
+
+	require.NoError(t, err)
+	require.Len(t, gen.Requests, 1)
+}
+
+func TestStaticSetMechanicalCandidateReprocessesWithoutProviderCall(t *testing.T) {
+	dir := testkit.WriteStaticSetPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	gen := &testkit.StaticSetProvider{}
+	opts := generate.Options{
+		OutputDir: filepath.Join(dir, p.OutputDir),
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "fortification"},
+	}
+
+	_, err := generate.Run(context.Background(), all, gen, opts)
+	require.NoError(t, err)
+	require.Len(t, gen.Requests, 1)
+	manifest, err := generate.Load(opts.OutputDir, opts.RunID)
+	require.NoError(t, err)
+	set := manifest.Intermediates["static-set:fortification"]
+	require.Len(t, set.Attempts, 1)
+	require.Len(t, set.Attempts[0].Candidates, 1)
+	set.Status = generate.StatusRejected
+	set.Lineage = ""
+	set.NormalizedPath = ""
+	set.HardRejections = []string{"obsolete mechanical rejection"}
+	set.Attempts[0].SelectedCandidate = ""
+	set.Attempts[0].Candidates[0].QualityVersion = 0
+	set.Attempts[0].Candidates[0].HardRejections = []string{"obsolete mechanical rejection"}
+	for _, target := range all {
+		state := manifest.Targets[target.ID]
+		state.Status = generate.StatusRejected
+		state.NormalizedPath = ""
+		state.HardRejections = []string{"obsolete mechanical rejection"}
+	}
+	require.NoError(t, generate.Save(opts.OutputDir, opts.RunID, manifest))
+
+	resume := &testkit.StaticSetProvider{}
+	result, err := generate.Run(context.Background(), all, resume, opts)
+
+	require.NoError(t, err)
+	require.Empty(t, resume.Requests)
+	require.Equal(t, 2, result.AwaitingReview)
+	reprocessed, err := generate.Load(opts.OutputDir, opts.RunID)
+	require.NoError(t, err)
+	require.Equal(
+		t,
+		generate.StatusAwaitingReview,
+		reprocessed.Intermediates["static-set:fortification"].Status,
+	)
+}
+
+func TestStaticSetMissingPartRejectsCompleteSet(t *testing.T) {
+	dir := testkit.WriteStaticSetPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	gen := &testkit.StaticSetProvider{PartCount: 1}
+	outputDir := filepath.Join(dir, p.OutputDir)
+
+	_, err := generate.Run(context.Background(), all, gen, generate.Options{
+		OutputDir: outputDir,
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "fortification"},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, gen.Requests, 1)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	set := manifest.Intermediates["static-set:fortification"]
+	require.Equal(t, generate.StatusRejected, set.Status)
+	for _, target := range all {
+		require.Equal(t, generate.StatusRejected, manifest.Targets[target.ID].Status)
+		require.False(t, manifest.Targets[target.ID].ProductionEligible)
+	}
 }
 
 func TestIsolatedStaticGenerationRejectsUnremovableFullCanvasBackdrop(t *testing.T) {

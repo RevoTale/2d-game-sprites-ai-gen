@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	ManifestVersion                    = 11
-	candidateQualityVersion            = 18
+	ManifestVersion                    = 12
+	candidateQualityVersion            = 21
 	AnimatedAssemblyVersion            = 8
 	opaqueTileHardMeanEdgeDelta        = 0.08
 	opaqueTileHardMaximumEdgeDelta     = 0.55
@@ -81,25 +81,29 @@ type UnitState struct {
 // IntermediateState stores one character master or one complete animation
 // board. Neither intermediate is reviewed or deployed independently.
 type IntermediateState struct {
-	ID               string                            `json:"id"`
-	Kind             string                            `json:"kind"`
-	Status           string                            `json:"status,omitempty"`
-	ObjectID         string                            `json:"objectId"`
-	AnimationID      string                            `json:"animationId,omitempty"`
-	TargetIDs        []string                          `json:"targetIds,omitempty"`
-	Dependencies     []string                          `json:"dependencies,omitempty"`
-	ParentID         string                            `json:"parentId,omitempty"`
-	NormalizedPath   string                            `json:"normalizedPath,omitempty"`
-	SourceSHA256     string                            `json:"sourceSha256,omitempty"`
-	Lineage          string                            `json:"lineage,omitempty"`
-	EditSourcePath   string                            `json:"editSourcePath,omitempty"`
-	SemanticLayout   *imageio.SemanticLayout           `json:"semanticLayout,omitempty"`
-	Poses            []imageio.SemanticPose            `json:"poses,omitempty"`
-	ScaleCalibration *imageio.SemanticScaleCalibration `json:"scaleCalibration,omitempty"`
-	HardRejections   []string                          `json:"hardRejections,omitempty"`
-	Warnings         []string                          `json:"warnings,omitempty"`
-	Artifacts        ReviewArtifacts                   `json:"artifacts,omitempty"`
-	Attempts         []Attempt                         `json:"attempts,omitempty"`
+	ID               string                             `json:"id"`
+	Kind             string                             `json:"kind"`
+	Status           string                             `json:"status,omitempty"`
+	ObjectID         string                             `json:"objectId"`
+	AnimationID      string                             `json:"animationId,omitempty"`
+	TargetIDs        []string                           `json:"targetIds,omitempty"`
+	Dependencies     []string                           `json:"dependencies,omitempty"`
+	ParentID         string                             `json:"parentId,omitempty"`
+	NormalizedPath   string                             `json:"normalizedPath,omitempty"`
+	SourceSHA256     string                             `json:"sourceSha256,omitempty"`
+	Lineage          string                             `json:"lineage,omitempty"`
+	EditSourcePath   string                             `json:"editSourcePath,omitempty"`
+	EditMaskPath     string                             `json:"editMaskPath,omitempty"`
+	SemanticLayout   *imageio.SemanticLayout            `json:"semanticLayout,omitempty"`
+	Poses            []imageio.SemanticPose             `json:"poses,omitempty"`
+	ScaleCalibration *imageio.SemanticScaleCalibration  `json:"scaleCalibration,omitempty"`
+	StaticSetScale   *imageio.StaticSetScaleCalibration `json:"staticSetScale,omitempty"`
+	HardRejections   []string                           `json:"hardRejections,omitempty"`
+	Warnings         []string                           `json:"warnings,omitempty"`
+	Artifacts        ReviewArtifacts                    `json:"artifacts,omitempty"`
+	Attempts         []Attempt                          `json:"attempts,omitempty"`
+	Review           *ReviewRecord                      `json:"review,omitempty"`
+	Deploy           *DeployRecord                      `json:"deploy,omitempty"`
 }
 
 type TargetState struct {
@@ -126,6 +130,9 @@ type TargetState struct {
 	Review             *ReviewRecord          `json:"review,omitempty"`
 	Deploy             *DeployRecord          `json:"deploy,omitempty"`
 	Production         *ProductionEvidence    `json:"production,omitempty"`
+	LogicalSize        pack.Size              `json:"logicalSize"`
+	IntrinsicSize      pack.Size              `json:"intrinsicSize"`
+	SourceDensity      int                    `json:"sourceDensity"`
 }
 
 type NormalizationRecord struct {
@@ -168,6 +175,7 @@ type ReviewArtifacts struct {
 	PortraitPreviewPath         string   `json:"portraitPreviewPath,omitempty"`
 	BattlefieldPreviewPath      string   `json:"battlefieldPreviewPath,omitempty"`
 	TiledPreviewPath            string   `json:"tiledPreviewPath,omitempty"`
+	RuntimeOverrideRoot         string   `json:"runtimeOverrideRoot,omitempty"`
 }
 
 type Attempt struct {
@@ -542,6 +550,12 @@ func generateStaticTarget(ctx context.Context, gen provider.Provider, opts Optio
 	state.Warnings = append([]string(nil), selected.Warnings...)
 	state.SourceCandidate = attempt.ID + "/" + selected.ID
 	state.NormalizedPath = filepath.Join(targetDir, "normalized.png")
+	state.LogicalSize = target.Size
+	state.IntrinsicSize = staticOutputSize(target, styleGuide)
+	state.SourceDensity = 2
+	if styleGuide {
+		state.SourceDensity = 1
+	}
 	state.Palette = selected.Palette
 	if err := imageio.CopyFile(selected.NormalizedPath, state.NormalizedPath); err != nil {
 		return err
@@ -630,27 +644,28 @@ func normalizeStaticCandidate(
 			return fmt.Errorf("inspect %q candidate %s background: %w", target.ID, candidate.ID, err)
 		}
 	}
+	outputSize := staticOutputSize(target, styleGuide)
 	if styleGuide {
 		candidate.Palette, err = imageio.WriteNormalizedCompositePNG(
 			candidate.NormalizedPath,
 			raw,
-			target.Size.Width,
-			target.Size.Height,
+			outputSize.Width,
+			outputSize.Height,
 		)
 	} else if opaqueTile {
 		candidate.Palette, err = imageio.WriteNormalizedOpaqueTilePNG(
 			candidate.NormalizedPath,
 			raw,
-			target.Size.Width,
-			target.Size.Height,
+			outputSize.Width,
+			outputSize.Height,
 			palette,
 		)
 	} else {
 		candidate.Palette, err = imageio.WriteNormalizedIsolatedPNG(
 			candidate.NormalizedPath,
 			raw,
-			target.Size.Width,
-			target.Size.Height,
+			outputSize.Width,
+			outputSize.Height,
 			palette,
 			imageio.SubjectRegistrationMode(target.RegistrationMode),
 		)
@@ -661,7 +676,7 @@ func normalizeStaticCandidate(
 	candidate.Metrics, _, err = imageio.EvaluateCandidate(
 		candidate.NormalizedPath,
 		candidate.NormalizedPath,
-		max(1, min(target.Size.Width, target.Size.Height)/32),
+		max(1, min(outputSize.Width, outputSize.Height)/32),
 	)
 	if err != nil {
 		return err
@@ -732,6 +747,16 @@ func normalizeStaticCandidate(
 		candidate.Metrics,
 		candidate.HardRejections,
 	)
+}
+
+func staticOutputSize(target targets.Target, styleGuide bool) pack.Size {
+	if styleGuide {
+		return target.Size
+	}
+	return pack.Size{
+		Width:  target.Size.Width * 2,
+		Height: target.Size.Height * 2,
+	}
 }
 
 func LoadOrCreate(outputDir, runID string, all []targets.Target) (*Manifest, error) {
@@ -865,7 +890,11 @@ func SortedTargetIDs(manifest *Manifest) []string {
 }
 
 func pendingState(target targets.Target) *TargetState {
-	return &TargetState{ID: target.ID, Status: StatusPending}
+	return &TargetState{
+		ID:          target.ID,
+		Status:      StatusPending,
+		LogicalSize: target.Size,
+	}
 }
 
 func shouldSkipGeneration(state *TargetState) bool {

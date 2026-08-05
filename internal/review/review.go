@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/generate"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
 )
 
@@ -80,6 +81,14 @@ func Apply(all []targets.Target, opts Options) (Result, error) {
 		unit.Artifacts.QAPath = filepath.Join(unitDir, "qa.md")
 	}
 	for _, group := range targets.AtomicGroups(staticTargets) {
+		var set *generate.IntermediateState
+		if group[0].ObjectKind == pack.KindStaticSet {
+			set = manifest.Intermediates[pack.KindStaticSet+":"+group[0].ObjectID]
+			if set == nil || set.Status != generate.StatusAwaitingReview {
+				result.SkippedPending += len(group)
+				continue
+			}
+		}
 		ready := true
 		for _, target := range group {
 			state := manifest.Targets[target.ID]
@@ -93,6 +102,27 @@ func Apply(all []targets.Target, opts Options) (Result, error) {
 			continue
 		}
 		reviewedAt := time.Now().UTC().Format(time.RFC3339)
+		if set != nil {
+			set.Status = opts.Status
+			set.Review = &generate.ReviewRecord{
+				Status: opts.Status, Reason: opts.Reason, ReviewedAt: reviewedAt,
+			}
+			set.Artifacts.QAPath = filepath.Join(
+				opts.OutputDir,
+				"runs",
+				opts.RunID,
+				"static-sets",
+				group[0].ObjectID,
+				"qa.md",
+			)
+			if err := generate.WriteQA(
+				filepath.Dir(set.Artifacts.QAPath),
+				opts.Status,
+				opts.Reason,
+			); err != nil {
+				return result, err
+			}
+		}
 		for _, target := range group {
 			state := manifest.Targets[target.ID]
 			state.Status = opts.Status

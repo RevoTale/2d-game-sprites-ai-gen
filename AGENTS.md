@@ -3,7 +3,9 @@
 - Use Taskfile. Keep `cmd/` as wiring and reusable behavior in focused
   `internal/` packages.
 - Prefer the Go standard library and keep generated output ignored.
-- Support strict `sprites.json` V5 and manifest V11 only.
+- Support strict `sprites.json` V6 and manifest V12 only. V6 requires every
+  object to declare bounded supernatural causes explicitly; an empty list means
+  the object is mundane.
 - Treat JSON visual facts and immutable CLI protocol as separate authorities.
   Do not load theme files or per-asset descriptors.
 - OpenAI is the only public real provider. Keep the fake provider private to

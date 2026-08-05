@@ -37,6 +37,23 @@ func TestE2EStaticGenerationReviewAndDeployRemainsSupported(t *testing.T) {
 	require.FileExists(t, filepath.Join(packDir, "deploy", "terrain", "grass.png"))
 }
 
+func TestCatalogBuildsWithoutSelectingProvider(t *testing.T) {
+	packDir := testkit.WritePack(t)
+	called := false
+	previous := productionProvider
+	productionProvider = func(map[string]string) (provider.Provider, error) {
+		called = true
+		return provider.Fake{}, nil
+	}
+	t.Cleanup(func() { productionProvider = previous })
+
+	err := run(context.Background(), []string{"catalog", "--pack", packDir})
+
+	require.NoError(t, err)
+	require.False(t, called)
+	require.FileExists(t, filepath.Join(packDir, "output", "catalog", "index.html"))
+}
+
 func TestRealGenerationRequiresExplicitObjectOrAllBeforeProviderSelection(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	packDir := testkit.WritePack(t)

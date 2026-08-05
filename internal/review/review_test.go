@@ -42,6 +42,36 @@ func TestStaticReviewBehaviorRemainsTargetAtomic(t *testing.T) {
 	require.Contains(t, manifest.Targets["grass"].Review.Reason, "manual visual review")
 }
 
+func TestStaticSetReviewAcceptsCompleteSetOnly(t *testing.T) {
+	dir := testkit.WriteStaticSetPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, p.OutputDir)
+	filter := targets.Filter{Object: "fortification"}
+	_, err := generate.Run(context.Background(), all, &testkit.StaticSetProvider{}, generate.Options{
+		OutputDir: outputDir,
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    filter,
+	})
+	require.NoError(t, err)
+
+	result, err := review.Apply(all, review.Options{
+		OutputDir: outputDir,
+		RunID:     "run",
+		Filter:    filter,
+		Status:    generate.StatusAccepted,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Reviewed)
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	require.Equal(t, generate.StatusAccepted, manifest.Intermediates["static-set:fortification"].Status)
+	for _, target := range all {
+		require.Equal(t, generate.StatusAccepted, manifest.Targets[target.ID].Status)
+	}
+}
+
 func TestAnimatedReviewAcceptsCompleteUnitOnly(t *testing.T) {
 	dir := testkit.WriteFullUnitPack(t)
 	p, all := testkit.LoadTargets(t, dir)

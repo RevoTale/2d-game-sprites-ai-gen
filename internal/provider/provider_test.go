@@ -145,6 +145,46 @@ func TestOpenAIUsesEditsEndpointWhenReferencesArePresent(t *testing.T) {
 	require.NotEmpty(t, result.PNG)
 }
 
+func TestOpenAISendsEditMaskAsDedicatedMultipartField(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "layout.png")
+	maskPath := filepath.Join(dir, "mask.png")
+	require.NoError(t, os.WriteFile(inputPath, testPNG(t, 1024, 1024), 0o644))
+	mask := image.NewNRGBA(image.Rect(0, 0, 1024, 1024))
+	for y := 0; y < 1024; y++ {
+		for x := 0; x < 1024; x++ {
+			mask.SetNRGBA(x, y, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
+		}
+	}
+	for y := 256; y < 768; y++ {
+		for x := 256; x < 768; x++ {
+			mask.SetNRGBA(x, y, color.NRGBA{})
+		}
+	}
+	var encodedMask bytes.Buffer
+	require.NoError(t, png.Encode(&encodedMask, mask))
+	require.NoError(t, os.WriteFile(maskPath, encodedMask.Bytes(), 0o644))
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		form, err := multipartReader(req)
+		require.NoError(t, err)
+		require.Len(t, form.File["image[]"], 1)
+		require.Len(t, form.File["mask"], 1)
+		require.Equal(t, "mask.png", form.File["mask"][0].Filename)
+		require.Equal(t, "image/png", form.File["mask"][0].Header.Get("Content-Type"))
+		return openAIImageResponse(t, 1024, 1024), nil
+	})
+
+	_, err := (provider.OpenAI{
+		APIKey: "test", Client: &http.Client{Transport: transport},
+	}).Generate(context.Background(), provider.Request{
+		Prompt: "complete masked board", Size: image.Pt(1024, 1024),
+		Inputs:   []conditioning.Input{{Role: conditioning.RolePose, Path: inputPath}},
+		MaskPath: maskPath,
+	})
+
+	require.NoError(t, err)
+}
+
 func TestOpenAIPreservesSupportedPortraitCanvasForFullUnitEdits(t *testing.T) {
 	referencePath := filepath.Join(t.TempDir(), "unit-board.png")
 	require.NoError(t, os.WriteFile(referencePath, testPNG(t, 8, 8), 0o644))
@@ -217,6 +257,7 @@ func TestOpenAIReportsEditErrorBody(t *testing.T) {
 func TestOpenAIReportsReferenceCapability(t *testing.T) {
 	capabilities := provider.OpenAI{}.Capabilities()
 	require.True(t, capabilities.References)
+	require.True(t, capabilities.Masks)
 }
 
 func TestOpenAIRejectsResponseWithUnexpectedDimensions(t *testing.T) {

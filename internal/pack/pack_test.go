@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestValidateV5RequiresExactOrderedAuthoredDirections(t *testing.T) {
+func TestValidateV6RequiresExactOrderedAuthoredDirections(t *testing.T) {
 	tests := []struct {
 		name    string
 		replace string
@@ -41,7 +41,7 @@ func TestValidateV5RequiresExactOrderedAuthoredDirections(t *testing.T) {
 	}
 }
 
-func TestValidateV5RequiresDirectionReferenceAtNativeObjectSize(t *testing.T) {
+func TestValidateV6RequiresDirectionReferenceAtNativeObjectSize(t *testing.T) {
 	dir := testkit.WritePack(t)
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "direction-right.png"),
@@ -54,7 +54,7 @@ func TestValidateV5RequiresDirectionReferenceAtNativeObjectSize(t *testing.T) {
 	require.ErrorContains(t, err, "is 8x8, expected 16x16")
 }
 
-func TestValidateV5RejectsDirectionReferenceOutsidePackAndDeployRoots(t *testing.T) {
+func TestValidateV6RejectsDirectionReferenceOutsidePackAndDeployRoots(t *testing.T) {
 	dir := testkit.WritePack(t)
 	outside := filepath.Join(filepath.Dir(dir), "outside.png")
 	require.NoError(t, os.WriteFile(outside, testkit.PNG(t, 16, 16), 0o644))
@@ -65,7 +65,7 @@ func TestValidateV5RejectsDirectionReferenceOutsidePackAndDeployRoots(t *testing
 	require.ErrorContains(t, err, "outside the pack or deploy directory")
 }
 
-func TestValidateV5ReservesDerivedDirectionReferenceIDsPackWide(t *testing.T) {
+func TestValidateV6ReservesDerivedDirectionReferenceIDsPackWide(t *testing.T) {
 	dir := testkit.WritePackWithReferences(t)
 	rewritePack(
 		t,
@@ -79,7 +79,7 @@ func TestValidateV5ReservesDerivedDirectionReferenceIDsPackWide(t *testing.T) {
 	require.ErrorContains(t, err, `duplicate reference id "direction-reference-blood-duelist-right"`)
 }
 
-func TestValidateV5RequiresLockedPaletteContract(t *testing.T) {
+func TestValidateV6RequiresLockedPaletteContract(t *testing.T) {
 	dir := testkit.WritePack(t)
 	rewritePack(t, dir, `"maxColors":32`, `"maxColors":64`)
 
@@ -88,7 +88,7 @@ func TestValidateV5RequiresLockedPaletteContract(t *testing.T) {
 	require.ErrorContains(t, err, "maxColors=32")
 }
 
-func TestValidateV5ConfinesGuideDeploymentAndMatchesStyleReference(t *testing.T) {
+func TestValidateV6ConfinesGuideDeploymentAndMatchesStyleReference(t *testing.T) {
 	tests := []struct {
 		name    string
 		replace string
@@ -120,7 +120,7 @@ func TestValidateV5ConfinesGuideDeploymentAndMatchesStyleReference(t *testing.T)
 	}
 }
 
-func TestValidateV5RejectsDuplicateObjectAndFrameIDs(t *testing.T) {
+func TestValidateV6RejectsDuplicateObjectAndFrameIDs(t *testing.T) {
 	tests := []struct {
 		name    string
 		replace string
@@ -152,7 +152,7 @@ func TestValidateV5RejectsDuplicateObjectAndFrameIDs(t *testing.T) {
 	}
 }
 
-func TestValidateV5RejectsUnknownDeployPlaceholder(t *testing.T) {
+func TestValidateV6RejectsUnknownDeployPlaceholder(t *testing.T) {
 	dir := testkit.WritePack(t)
 	rewritePack(t, dir, `{object}.png`, `{unknown}.png`)
 
@@ -161,7 +161,7 @@ func TestValidateV5RejectsUnknownDeployPlaceholder(t *testing.T) {
 	require.ErrorContains(t, err, `unknown deploy placeholder "{unknown}"`)
 }
 
-func TestValidateV5ReservesStyleGuideObjectID(t *testing.T) {
+func TestValidateV6ReservesStyleGuideObjectID(t *testing.T) {
 	dir := testkit.WritePack(t)
 	rewritePack(t, dir, `"id":"grass"`, `"id":"style-guide"`)
 
@@ -170,7 +170,7 @@ func TestValidateV5ReservesStyleGuideObjectID(t *testing.T) {
 	require.ErrorContains(t, err, `object id "style-guide" is reserved`)
 }
 
-func TestLoadV5AcceptsFixtureAndDoesNotReturnTheme(t *testing.T) {
+func TestLoadV6AcceptsFixtureAndDoesNotReturnTheme(t *testing.T) {
 	dir := testkit.WritePack(t)
 
 	p, err := pack.Load(dir)

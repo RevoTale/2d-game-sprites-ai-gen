@@ -262,6 +262,9 @@ func assembleAnimatedUnit(opts Options, manifest *Manifest, plan animatedUnitPla
 			state := manifest.Targets[target.ID]
 			state.Status = StatusAwaitingReview
 			state.NormalizedPath = outputs[index]
+			state.LogicalSize = target.Size
+			state.IntrinsicSize = target.Size
+			state.SourceDensity = 1
 			state.UnitID = unit.ID
 			state.CharacterMasterID = master.ID
 			state.AnimationBoardID = board.ID

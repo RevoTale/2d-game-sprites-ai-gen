@@ -22,6 +22,7 @@ type Target struct {
 	Archetype        string
 	Family           string
 	Style            pack.Style
+	MagicSources     []pack.MagicSource
 	IdentityLocks    []string
 	RenderMode       string
 	RegistrationMode string
@@ -35,6 +36,9 @@ type Target struct {
 	FrameID          string
 	FrameDesc        string
 	FrameIndex       int
+	SetPartID        string
+	SetPartRole      string
+	SetPartDesc      string
 	Size             pack.Size
 	Inputs           []conditioning.Input
 	DeployTemplate   string
@@ -51,6 +55,12 @@ func Expand(p *pack.Pack) ([]Target, error) {
 	for _, obj := range p.Objects {
 		if obj.Kind == pack.KindStatic {
 			out = append(out, makeTarget(p, obj, nil, pack.Animation{}, -1, -1, pack.Frame{}))
+			continue
+		}
+		if obj.Kind == pack.KindStaticSet {
+			for _, part := range obj.Parts {
+				out = append(out, makeStaticSetTarget(p, obj, part))
+			}
 			continue
 		}
 		for directionIndex := range obj.Directions {
@@ -125,6 +135,8 @@ func AtomicGroups(selected []Target) [][]Target {
 		key := "static\x00" + target.ID
 		if target.AnimationID != "" {
 			key = "unit\x00" + target.ObjectID
+		} else if target.ObjectKind == pack.KindStaticSet {
+			key = "static-set\x00" + target.ObjectID
 		}
 		index, ok := indexes[key]
 		if !ok {
@@ -135,6 +147,20 @@ func AtomicGroups(selected []Target) [][]Target {
 		groups[index] = append(groups[index], target)
 	}
 	return groups
+}
+
+func makeStaticSetTarget(p *pack.Pack, obj pack.Object, part pack.StaticSetPart) Target {
+	partObject := obj
+	partObject.Size = part.Size
+	partObject.Deploy = part.Deploy
+	partObject.Parts = nil
+	target := makeTarget(p, partObject, nil, pack.Animation{}, -1, -1, pack.Frame{})
+	target.ID = obj.ID + "-part-" + part.ID
+	target.SetPartID = part.ID
+	target.SetPartRole = part.Role
+	target.SetPartDesc = part.Description
+	target.Prompt = BuildPrompt(target)
+	return target
 }
 
 func makeTarget(
@@ -175,6 +201,7 @@ func makeTarget(
 		Archetype:        obj.Archetype,
 		Family:           obj.Family,
 		Style:            p.Style,
+		MagicSources:     cloneMagicSources(obj.MagicSources),
 		IdentityLocks:    append([]string(nil), obj.IdentityLocks...),
 		RenderMode:       pack.EffectiveRenderMode(obj),
 		RegistrationMode: pack.EffectiveRegistrationMode(obj),
@@ -218,6 +245,10 @@ func BuildPrompt(target Target) string {
 	var b strings.Builder
 	writeStyleFacts(&b, target.Style)
 	fmt.Fprintf(&b, "\n# Object\n%s\n", target.ObjectDesc)
+	b.WriteString(MagicSourceFacts(target.MagicSources))
+	if target.SetPartID != "" {
+		fmt.Fprintf(&b, "\n# Set part: %s\nRole: %s\n%s\n", target.SetPartID, target.SetPartRole, target.SetPartDesc)
+	}
 	if target.Archetype != "" {
 		writeRuleSet(&b, "Unit archetype: "+target.Archetype, target.Style.Units.Archetypes[target.Archetype])
 	}
@@ -232,6 +263,38 @@ func BuildPrompt(target Target) string {
 	}
 	if target.FrameID != "" {
 		fmt.Fprintf(&b, "\n# Frame: %s\n%s\n", target.FrameID, target.FrameDesc)
+	}
+	return b.String()
+}
+
+func cloneMagicSources(sources *[]pack.MagicSource) []pack.MagicSource {
+	if sources == nil {
+		return []pack.MagicSource{}
+	}
+	cloned := make([]pack.MagicSource, len(*sources))
+	for index, source := range *sources {
+		cloned[index] = source
+		cloned[index].Limits = append([]string{}, source.Limits...)
+	}
+	return cloned
+}
+
+// MagicSourceFacts renders the complete causal appearance contract for use by
+// both static and animated provider prompts.
+func MagicSourceFacts(sources []pack.MagicSource) string {
+	var b strings.Builder
+	if len(sources) == 0 {
+		b.WriteString("\n# Supernatural sources\n")
+		b.WriteString("None declared. Do not invent glow, runes, magical filigree, detached energy, or unnatural color flow.\n")
+		return b.String()
+	}
+	for _, source := range sources {
+		fmt.Fprintf(&b, "\n# Supernatural source: %s\n", source.ID)
+		fmt.Fprintf(&b, "%s\n", source.Description)
+		fmt.Fprintf(&b, "Location: %s\n", source.Location)
+		fmt.Fprintf(&b, "Palette: %s\n", source.Palette)
+		fmt.Fprintf(&b, "Expression: %s\n", source.Expression)
+		writeStrings(&b, "Limits", source.Limits)
 	}
 	return b.String()
 }

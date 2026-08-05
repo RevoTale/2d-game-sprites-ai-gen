@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/catalog"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/conditioning"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/deploy"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/envfile"
@@ -81,6 +82,8 @@ func run(ctx context.Context, args []string) error {
 			guideState,
 		)
 		return nil
+	case "catalog":
+		return runCatalog(args[1:])
 	case "generate":
 		return runGenerate(ctx, args[1:])
 	case "status":
@@ -100,6 +103,48 @@ func run(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runCatalog(args []string) error {
+	fs := flag.NewFlagSet("catalog", flag.ContinueOnError)
+	packDir := fs.String("pack", ".", "sprite pack directory")
+	usageRoot := fs.String("usage-root", "", "optional directory containing map JSON packages")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("catalog does not accept positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	p, err := pack.Load(*packDir)
+	if err != nil {
+		return err
+	}
+	all, err := targets.Expand(p)
+	if err != nil {
+		return err
+	}
+	deployDir := p.DeployDir
+	if deployDir == "" {
+		return errors.New("deployDir is required for catalog")
+	}
+	if !filepath.IsAbs(deployDir) {
+		deployDir = filepath.Join(*packDir, deployDir)
+	}
+	resolvedUsageRoot := *usageRoot
+	if resolvedUsageRoot != "" && !filepath.IsAbs(resolvedUsageRoot) {
+		resolvedUsageRoot = filepath.Join(*packDir, resolvedUsageRoot)
+	}
+	result, err := catalog.Build(p, all, catalog.Options{
+		PackDir:   *packDir,
+		DeployDir: deployDir,
+		UsageRoot: resolvedUsageRoot,
+		OutputDir: filepath.Join(*packDir, pack.OutputDir(p), "catalog"),
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("catalog_entries: %d\nindex: %s\nmetadata: %s\n", result.Entries, result.IndexPath, result.MetadataPath)
+	return nil
 }
 
 func runInit(args []string) error {
@@ -614,7 +659,7 @@ func scopedTargets(
 }
 
 const starterSpritesJSON = `{
-  "version": 5,
+  "version": 6,
   "outputDir": "output",
   "deployDir": "deploy",
   "style": {
@@ -679,6 +724,7 @@ const starterSpritesJSON = `{
       "renderMode": "opaque-tile",
       "registration": "canvas",
       "description": "Quiet seamless dark battlefield ground.",
+      "magicSources": [],
       "size": {"width": 256, "height": 256},
       "deploy": {"pathTemplate": "terrain/ground-example.png"}
     }

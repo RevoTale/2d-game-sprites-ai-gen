@@ -27,6 +27,7 @@ import (
 
 type Capabilities struct {
 	References bool
+	Masks      bool
 	Progress   bool
 }
 
@@ -34,6 +35,7 @@ type Request struct {
 	Prompt           string
 	Size             image.Point
 	Inputs           []conditioning.Input
+	MaskPath         string
 	CandidateOrdinal int
 	Progress         func(current, total int)
 }
@@ -54,7 +56,7 @@ type Fake struct {
 
 func (f Fake) Capabilities() Capabilities {
 	if f.CapabilitiesValue == (Capabilities{}) {
-		return Capabilities{References: true, Progress: true}
+		return Capabilities{References: true, Masks: true, Progress: true}
 	}
 	return f.CapabilitiesValue
 }
@@ -151,7 +153,7 @@ type openAIImageRequest struct {
 }
 
 func (o OpenAI) Capabilities() Capabilities {
-	return Capabilities{References: true}
+	return Capabilities{References: true, Masks: true}
 }
 
 func (o OpenAI) Generate(ctx context.Context, req Request) (Result, error) {
@@ -171,10 +173,54 @@ func (o OpenAI) Generate(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if req.MaskPath != "" {
+		if len(req.Inputs) == 0 {
+			return Result{}, errors.New("openai edit mask requires at least one input image")
+		}
+		if err := validateEditMask(req.MaskPath, providerSize); err != nil {
+			return Result{}, err
+		}
+	}
 	if len(req.Inputs) > 0 {
 		return o.generateEdit(ctx, client, apiKey, model, req, providerSize)
 	}
 	return o.generateFromPrompt(ctx, client, apiKey, model, req, providerSize)
+}
+
+func validateEditMask(path string, expected image.Point) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open edit mask %q: %w", path, err)
+	}
+	decoded, err := png.Decode(file)
+	closeErr := file.Close()
+	if err != nil {
+		return fmt.Errorf("decode edit mask %q as PNG: %w", path, err)
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if decoded.Bounds().Size() != expected {
+		return fmt.Errorf(
+			"edit mask is %dx%d, expected %dx%d",
+			decoded.Bounds().Dx(),
+			decoded.Bounds().Dy(),
+			expected.X,
+			expected.Y,
+		)
+	}
+	hasEditable, hasProtected := false, false
+	for y := decoded.Bounds().Min.Y; y < decoded.Bounds().Max.Y && !(hasEditable && hasProtected); y++ {
+		for x := decoded.Bounds().Min.X; x < decoded.Bounds().Max.X; x++ {
+			_, _, _, alpha := decoded.At(x, y).RGBA()
+			hasEditable = hasEditable || alpha == 0
+			hasProtected = hasProtected || alpha == 0xffff
+		}
+	}
+	if !hasEditable || !hasProtected {
+		return errors.New("edit mask must contain transparent editable and opaque protected pixels")
+	}
+	return nil
 }
 
 func openAIHTTPClient(base *http.Client, timeout time.Duration) *http.Client {
@@ -261,6 +307,11 @@ func (o OpenAI) generateEdit(ctx context.Context, client *http.Client, apiKey, m
 			return Result{}, err
 		}
 	}
+	if req.MaskPath != "" {
+		if err := addImagePath(writer, "mask", req.MaskPath); err != nil {
+			return Result{}, err
+		}
+	}
 	if err := writer.Close(); err != nil {
 		return Result{}, err
 	}
@@ -306,9 +357,13 @@ func validateProviderPNG(data []byte, expected image.Point) error {
 }
 
 func addInputImage(writer *multipart.Writer, field string, input conditioning.Input) error {
-	file, err := os.Open(input.Path)
+	return addImagePath(writer, field, input.Path)
+}
+
+func addImagePath(writer *multipart.Writer, field, path string) error {
+	file, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("open generation input %q: %w", input.Path, err)
+		return fmt.Errorf("open generation input %q: %w", path, err)
 	}
 	defer file.Close()
 	contentType, err := referenceContentType(file)
@@ -318,7 +373,7 @@ func addInputImage(writer *multipart.Writer, field string, input conditioning.In
 	header := make(textproto.MIMEHeader)
 	header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{
 		"name":     field,
-		"filename": filepath.Base(input.Path),
+		"filename": filepath.Base(path),
 	}))
 	header.Set("Content-Type", contentType)
 	part, err := writer.CreatePart(header)
@@ -326,7 +381,7 @@ func addInputImage(writer *multipart.Writer, field string, input conditioning.In
 		return err
 	}
 	if _, err := io.Copy(part, file); err != nil {
-		return fmt.Errorf("copy generation input %q: %w", input.Path, err)
+		return fmt.Errorf("copy generation input %q: %w", path, err)
 	}
 	return nil
 }

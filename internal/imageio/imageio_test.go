@@ -328,6 +328,162 @@ func TestWriteNormalizedIsolatedPNGGroundsCompleteForeground(t *testing.T) {
 	require.InDelta(t, 80, float64(foreground.Min.X+foreground.Max.X)/2, 1)
 }
 
+func TestWriteNormalizedTransparentIsolatedPNGPreservesRecoveredCropEdges(t *testing.T) {
+	dir := t.TempDir()
+	input := image.NewNRGBA(image.Rect(0, 0, 12, 10))
+	for y := input.Bounds().Min.Y; y < input.Bounds().Max.Y; y++ {
+		for x := input.Bounds().Min.X; x < input.Bounds().Max.X; x++ {
+			input.SetNRGBA(x, y, color.NRGBA{R: 70, G: 80, B: 90, A: 255})
+		}
+	}
+	var encoded bytes.Buffer
+	require.NoError(t, png.Encode(&encoded, input))
+	path := filepath.Join(dir, "normalized.png")
+
+	_, err := imageio.WriteNormalizedTransparentIsolatedPNG(
+		path,
+		encoded.Bytes(),
+		10,
+		10,
+		nil,
+		imageio.SubjectRegistrationGrounded,
+	)
+
+	require.NoError(t, err)
+	require.FileExists(t, path)
+}
+
+func TestWriteNativeScaleTransparentIsolatedPNGOnlyPadsForeground(t *testing.T) {
+	input := image.NewNRGBA(image.Rect(0, 0, 100, 80))
+	fillRect(input, input.Bounds(), color.NRGBA{R: 70, G: 80, B: 90, A: 255})
+	var encoded bytes.Buffer
+	require.NoError(t, png.Encode(&encoded, input))
+	path := filepath.Join(t.TempDir(), "native.png")
+
+	_, err := imageio.WriteNativeScaleTransparentIsolatedPNG(
+		path,
+		encoded.Bytes(),
+		160,
+		160,
+		nil,
+		imageio.SubjectRegistrationGrounded,
+	)
+
+	require.NoError(t, err)
+	foreground := opaqueBounds(readPNG(t, path))
+	require.Equal(t, image.Pt(100, 80), foreground.Size())
+	require.Equal(t, 155, foreground.Max.Y)
+}
+
+func TestWriteSharedScaleTransparentStaticSetUsesOneLimitingScale(t *testing.T) {
+	dir := t.TempDir()
+	wide := filepath.Join(dir, "wide.png")
+	compact := filepath.Join(dir, "compact.png")
+	writeOpaqueCropPNG(t, wide, image.Pt(200, 80))
+	writeOpaqueCropPNG(t, compact, image.Pt(60, 100))
+	wideOutput := filepath.Join(dir, "wide-output.png")
+	compactOutput := filepath.Join(dir, "compact-output.png")
+
+	calibration, err := imageio.WriteSharedScaleTransparentStaticSet(
+		[]imageio.StaticSetPart{
+			{
+				ID: "wide", SourcePath: wide, OutputPath: wideOutput,
+				Size: image.Pt(160, 160), Registration: imageio.SubjectRegistrationCentered,
+			},
+			{
+				ID: "compact", SourcePath: compact, OutputPath: compactOutput,
+				Size: image.Pt(160, 160), Registration: imageio.SubjectRegistrationGrounded,
+			},
+		},
+		[]imageio.PaletteColor{{R: 70, G: 80, B: 90}},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, "wide", calibration.LimitingPartID)
+	require.Equal(t, "width", calibration.LimitingAxis)
+	require.Less(t, calibration.Scale, 1.0)
+	wideBounds := opaqueBounds(readPNG(t, wideOutput))
+	compactBounds := opaqueBounds(readPNG(t, compactOutput))
+	require.Equal(t, image.Pt(150, 60), wideBounds.Size())
+	require.Equal(t, image.Pt(45, 75), compactBounds.Size())
+	require.InDelta(t, 80, float64(wideBounds.Min.X+wideBounds.Max.X)/2, 1)
+	require.Equal(t, 155, compactBounds.Max.Y)
+}
+
+func TestWriteSharedScaleTransparentStaticSetCanBeHeightLimited(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "tall.png")
+	writeOpaqueCropPNG(t, source, image.Pt(50, 201))
+	output := filepath.Join(dir, "output.png")
+
+	calibration, err := imageio.WriteSharedScaleTransparentStaticSet(
+		[]imageio.StaticSetPart{{
+			ID: "tall", SourcePath: source, OutputPath: output,
+			Size: image.Pt(161, 159), Registration: imageio.SubjectRegistrationGrounded,
+		}},
+		[]imageio.PaletteColor{{R: 70, G: 80, B: 90}},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, "tall", calibration.LimitingPartID)
+	require.Equal(t, "height", calibration.LimitingAxis)
+	foreground := opaqueBounds(readPNG(t, output))
+	require.Equal(t, 151, foreground.Dy())
+	require.Equal(t, 155, foreground.Max.Y)
+}
+
+func TestWriteSharedScaleTransparentStaticSetDoesNotUpscale(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.png")
+	writeOpaqueCropPNG(t, source, image.Pt(40, 30))
+	first := filepath.Join(dir, "first.png")
+	second := filepath.Join(dir, "second.png")
+	parts := []imageio.StaticSetPart{
+		{ID: "first", SourcePath: source, OutputPath: first, Size: image.Pt(160, 160), Registration: imageio.SubjectRegistrationCentered},
+		{ID: "second", SourcePath: source, OutputPath: second, Size: image.Pt(200, 180), Registration: imageio.SubjectRegistrationGrounded},
+	}
+
+	firstCalibration, err := imageio.WriteSharedScaleTransparentStaticSet(
+		parts,
+		[]imageio.PaletteColor{{R: 70, G: 80, B: 90}},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, 1.0, firstCalibration.Scale)
+	require.Empty(t, firstCalibration.LimitingPartID)
+	require.Equal(t, image.Pt(40, 30), opaqueBounds(readPNG(t, first)).Size())
+	require.Equal(t, image.Pt(40, 30), opaqueBounds(readPNG(t, second)).Size())
+	firstBytes, err := os.ReadFile(first)
+	require.NoError(t, err)
+	secondCalibration, err := imageio.WriteSharedScaleTransparentStaticSet(
+		parts,
+		[]imageio.PaletteColor{{R: 70, G: 80, B: 90}},
+	)
+	require.NoError(t, err)
+	require.Equal(t, firstCalibration, secondCalibration)
+	secondBytes, err := os.ReadFile(first)
+	require.NoError(t, err)
+	require.Equal(t, firstBytes, secondBytes)
+}
+
+func TestWriteSharedScaleTransparentStaticSetMeasuresCompleteSetBeforeWriting(t *testing.T) {
+	dir := t.TempDir()
+	validSource := filepath.Join(dir, "valid.png")
+	writeOpaqueCropPNG(t, validSource, image.Pt(40, 30))
+	validOutput := filepath.Join(dir, "valid-output.png")
+
+	_, err := imageio.WriteSharedScaleTransparentStaticSet(
+		[]imageio.StaticSetPart{
+			{ID: "valid", SourcePath: validSource, OutputPath: validOutput, Size: image.Pt(80, 80), Registration: imageio.SubjectRegistrationCentered},
+			{ID: "missing", SourcePath: filepath.Join(dir, "missing.png"), OutputPath: filepath.Join(dir, "missing-output.png"), Size: image.Pt(80, 80), Registration: imageio.SubjectRegistrationCentered},
+		},
+		[]imageio.PaletteColor{{R: 70, G: 80, B: 90}},
+	)
+
+	require.ErrorContains(t, err, `decode static set part "missing"`)
+	require.NoFileExists(t, validOutput)
+}
+
 func TestWriteNormalizedIsolatedPNGRejectsRequiredUpscale(t *testing.T) {
 	background := color.NRGBA{R: 255, B: 255, A: 255}
 	img := image.NewNRGBA(image.Rect(0, 0, 1024, 1024))
@@ -534,6 +690,13 @@ func writePNG(t *testing.T, path string, img image.Image) {
 	require.NoError(t, file.Close())
 }
 
+func writeOpaqueCropPNG(t *testing.T, path string, size image.Point) {
+	t.Helper()
+	img := image.NewNRGBA(image.Rectangle{Max: size})
+	fillRect(img, img.Bounds(), color.NRGBA{R: 70, G: 80, B: 90, A: 255})
+	writePNG(t, path, img)
+}
+
 func TestWriteNormalizedPNGPreservesAspectRatioAndPadsNonSquareTargets(t *testing.T) {
 	var raw bytes.Buffer
 	img := image.NewNRGBA(image.Rect(0, 0, 64, 64))
@@ -702,4 +865,18 @@ func TestWriteCandidateReviewSheetLabelsCandidateIDsAndMechanicalValidity(t *tes
 	require.Equal(t, color.NRGBA{R: 165, G: 36, B: 36, A: 255}, color.NRGBAModel.Convert(sheet.At(16, 0)))
 	require.Equal(t, color.NRGBA{R: 255, A: 255}, color.NRGBAModel.Convert(sheet.At(0, 40)))
 	require.Equal(t, color.NRGBA{B: 255, A: 255}, color.NRGBAModel.Convert(sheet.At(16, 40)))
+}
+
+func TestWriteDensityReducedPNGPreservesCompleteCanvas(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.png")
+	outputPath := filepath.Join(dir, "logical.png")
+	source := image.NewNRGBA(image.Rect(0, 0, 64, 48))
+	fillRect(source, image.Rect(8, 8, 56, 40), color.NRGBA{R: 80, G: 120, B: 200, A: 255})
+	writePNG(t, sourcePath, source)
+
+	require.NoError(t, imageio.WriteDensityReducedPNG(sourcePath, outputPath, 2))
+	dimensions, err := imageio.PNGDimensions(outputPath)
+	require.NoError(t, err)
+	require.Equal(t, image.Pt(32, 24), dimensions)
 }

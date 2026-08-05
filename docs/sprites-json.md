@@ -1,4 +1,4 @@
-# `sprites.json` V5
+# `sprites.json` V6
 
 The strict JSON document is the only user-authored generation contract.
 Unknown fields fail.

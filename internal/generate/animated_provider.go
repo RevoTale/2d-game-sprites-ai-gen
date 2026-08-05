@@ -109,6 +109,7 @@ func generateCharacterMaster(
 		prompt,
 		inputs,
 		nil,
+		"",
 		characterMasterKind,
 		layout.Canvas(),
 	); err != nil {
@@ -218,6 +219,7 @@ func generateAnimationBoard(
 		prompt,
 		inputs,
 		reviewOnly,
+		"",
 		animationBoardKind,
 		layout.Canvas(),
 	); err != nil {

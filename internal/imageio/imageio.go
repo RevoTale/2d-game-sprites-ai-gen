@@ -121,6 +121,54 @@ func WriteNormalizedIsolatedPNG(
 		locked,
 		registration,
 		false,
+		true,
+		false,
+	)
+}
+
+// WriteNormalizedTransparentIsolatedPNG fits an already background-free crop
+// into its declared canvas. Semantic board recovery owns background removal,
+// so edge-touching pixels in the crop are real subject pixels.
+func WriteNormalizedTransparentIsolatedPNG(
+	path string,
+	data []byte,
+	width, height int,
+	locked []PaletteColor,
+	registration SubjectRegistrationMode,
+) ([]PaletteColor, error) {
+	return writeNormalizedIsolatedPNG(
+		path,
+		data,
+		width,
+		height,
+		locked,
+		registration,
+		false,
+		false,
+		false,
+	)
+}
+
+// WriteNativeScaleTransparentIsolatedPNG preserves the shared provider-board
+// scale and only registers the recovered crop inside its production canvas.
+// Oversized subjects reject instead of being independently reduced.
+func WriteNativeScaleTransparentIsolatedPNG(
+	path string,
+	data []byte,
+	width, height int,
+	locked []PaletteColor,
+	registration SubjectRegistrationMode,
+) ([]PaletteColor, error) {
+	return writeNormalizedIsolatedPNG(
+		path,
+		data,
+		width,
+		height,
+		locked,
+		registration,
+		false,
+		false,
+		true,
 	)
 }
 
@@ -142,6 +190,8 @@ func WriteIsolatedReviewPreviewPNG(
 		locked,
 		registration,
 		true,
+		true,
+		false,
 	)
 }
 
@@ -152,6 +202,8 @@ func writeNormalizedIsolatedPNG(
 	locked []PaletteColor,
 	registration SubjectRegistrationMode,
 	allowUpscale bool,
+	removeBackground bool,
+	preserveScale bool,
 ) ([]PaletteColor, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("normalized png size must be positive, got %dx%d", width, height)
@@ -164,7 +216,17 @@ func writeNormalizedIsolatedPNG(
 	if err != nil {
 		return nil, fmt.Errorf("decode png: %w", err)
 	}
-	foreground := removeEdgeBackground(decoded)
+	foreground := image.NewNRGBA(decoded.Bounds())
+	stddraw.Draw(
+		foreground,
+		foreground.Bounds(),
+		decoded,
+		decoded.Bounds().Min,
+		stddraw.Src,
+	)
+	if removeBackground {
+		foreground = removeEdgeBackground(decoded)
+	}
 	foregroundBounds, err := alphaBounds(foreground)
 	if err != nil {
 		return nil, fmt.Errorf("isolated foreground: %w", err)
@@ -174,26 +236,39 @@ func writeNormalizedIsolatedPNG(
 	if safe.Empty() {
 		return nil, fmt.Errorf("isolated target %dx%d has no safe foreground rectangle", width, height)
 	}
-	scale := math.Min(
-		float64(safe.Dx())/float64(foregroundBounds.Dx()),
-		float64(safe.Dy())/float64(foregroundBounds.Dy()),
-	)
-	if scale > 1 && !allowUpscale {
-		return nil, fmt.Errorf(
-			"isolated foreground %dx%d requires upscaling to fit target %dx%d",
+	fittedWidth, fittedHeight := foregroundBounds.Dx(), foregroundBounds.Dy()
+	if preserveScale {
+		if fittedWidth > safe.Dx() || fittedHeight > safe.Dy() {
+			return nil, fmt.Errorf(
+				"isolated foreground %dx%d exceeds native-scale safe target %dx%d",
+				fittedWidth,
+				fittedHeight,
+				safe.Dx(),
+				safe.Dy(),
+			)
+		}
+	} else {
+		scale := math.Min(
+			float64(safe.Dx())/float64(foregroundBounds.Dx()),
+			float64(safe.Dy())/float64(foregroundBounds.Dy()),
+		)
+		if scale > 1 && !allowUpscale {
+			return nil, fmt.Errorf(
+				"isolated foreground %dx%d requires upscaling to fit target %dx%d",
+				foregroundBounds.Dx(),
+				foregroundBounds.Dy(),
+				width,
+				height,
+			)
+		}
+		fitted := aspectFitRect(
 			foregroundBounds.Dx(),
 			foregroundBounds.Dy(),
-			width,
-			height,
+			safe.Dx(),
+			safe.Dy(),
 		)
+		fittedWidth, fittedHeight = fitted.Dx(), fitted.Dy()
 	}
-	fitted := aspectFitRect(
-		foregroundBounds.Dx(),
-		foregroundBounds.Dy(),
-		safe.Dx(),
-		safe.Dy(),
-	)
-	fittedWidth, fittedHeight := fitted.Dx(), fitted.Dy()
 	left := safe.Min.X + (safe.Dx()-fittedWidth)/2
 	top := safe.Min.Y + (safe.Dy()-fittedHeight)/2
 	if registration == SubjectRegistrationGrounded {
@@ -605,6 +680,30 @@ func SharedPaletteFromPNGs(paths []string, limit int) ([]PaletteColor, error) {
 		limit = defaultPaletteSize
 	}
 	return paletteFromCounts(counts, limit), nil
+}
+
+// WriteDensityReducedPNG writes the exact logical-size review form of an
+// intrinsic-density source. It scales the complete canvas deterministically;
+// it never refits or recenters foreground content.
+func WriteDensityReducedPNG(sourcePath, outputPath string, density int) error {
+	if density < 1 {
+		return fmt.Errorf("source density must be positive")
+	}
+	source, err := decodeNRGBA(sourcePath)
+	if err != nil {
+		return err
+	}
+	if source.Bounds().Dx()%density != 0 || source.Bounds().Dy()%density != 0 {
+		return fmt.Errorf("source dimensions are not divisible by density %d", density)
+	}
+	destination := image.NewNRGBA(image.Rect(
+		0,
+		0,
+		source.Bounds().Dx()/density,
+		source.Bounds().Dy()/density,
+	))
+	areaScale(destination, destination.Bounds(), source, source.Bounds())
+	return writePNG(outputPath, destination)
 }
 
 func normalizeImage(

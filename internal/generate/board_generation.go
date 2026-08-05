@@ -28,6 +28,7 @@ func generateBoardCandidate(
 	state *IntermediateState,
 	dir, prompt string,
 	inputs, reviewOnly []conditioning.Input,
+	maskPath string,
 	kind string,
 	canvas image.Point,
 ) error {
@@ -51,6 +52,18 @@ func generateBoardCandidate(
 	if err != nil {
 		return err
 	}
+	if maskPath != "" {
+		maskEvidence, evidenceErr := referenceEvidence(conditioning.Input{
+			ID: "edit-mask", Role: conditioning.RolePose,
+			Authority: "cli-protocol", SourcePath: maskPath, Path: maskPath,
+			Description: "CLI-owned alpha mask defining guarded editable regions.",
+		}, true, 0)
+		if evidenceErr != nil {
+			return evidenceErr
+		}
+		maskEvidence.Role = "mask"
+		attempt.References = append(attempt.References, maskEvidence)
+	}
 	state.Artifacts.EvidencePath = filepath.Join(attemptDir, "evidence.json")
 	if err := writeEvidence(state.Artifacts.EvidencePath, attempt.References); err != nil {
 		return err
@@ -62,7 +75,7 @@ func generateBoardCandidate(
 	if len(attempt.Candidates) == 0 {
 		opts.report(ProgressEvent{Stage: ProgressCandidateGenerating, TargetID: state.ID, Candidate: 1, Candidates: 1})
 		result, err := gen.Generate(ctx, provider.Request{
-			Prompt: prompt, Size: canvas, Inputs: hydrated, CandidateOrdinal: 1,
+			Prompt: prompt, Size: canvas, Inputs: hydrated, MaskPath: maskPath, CandidateOrdinal: 1,
 			Progress: func(current, _ int) {
 				opts.report(ProgressEvent{Stage: ProgressProviderProgress, TargetID: state.ID, Candidate: 1, Candidates: 1, ProviderCurrent: current})
 			},
@@ -252,6 +265,10 @@ func candidateReviewSummary(candidate *Candidate) string {
 }
 
 func prepareIntermediateAttempt(state *IntermediateState) *Attempt {
+	if intermediateNeedsReprocessing(state) {
+		resetIntermediateResult(state)
+		return &state.Attempts[len(state.Attempts)-1]
+	}
 	if state.Status == StatusPending && len(state.Attempts) > 0 {
 		latest := &state.Attempts[len(state.Attempts)-1]
 		if latest.SelectedCandidate == "" && len(latest.Candidates) <= 1 {

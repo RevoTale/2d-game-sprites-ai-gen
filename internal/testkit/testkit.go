@@ -3,6 +3,7 @@ package testkit
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
 	"image/color"
@@ -13,9 +14,62 @@ import (
 	"testing"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/provider"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
 	"github.com/stretchr/testify/require"
 )
+
+type StaticSetProvider struct {
+	Requests  []provider.Request
+	PartCount int
+}
+
+func (p *StaticSetProvider) Capabilities() provider.Capabilities {
+	return provider.Capabilities{References: true, Masks: true}
+}
+
+func (p *StaticSetProvider) Generate(
+	_ context.Context,
+	request provider.Request,
+) (provider.Result, error) {
+	p.Requests = append(p.Requests, request)
+	count := p.PartCount
+	if count == 0 {
+		data, err := os.ReadFile(request.Inputs[0].Path)
+		if err != nil {
+			return provider.Result{}, err
+		}
+		return provider.Result{PNG: data}, nil
+	}
+	img := image.NewNRGBA(image.Rect(0, 0, request.Size.X, request.Size.Y))
+	for index := range count {
+		anchor := image.Pt(request.Size.X/2, request.Size.Y/2)
+		width := 180 - index%3*20
+		height := 150 - index%3*20
+		bounds := image.Rect(
+			anchor.X-width/2,
+			anchor.Y-height,
+			anchor.X+(width+1)/2,
+			anchor.Y,
+		)
+		fill := color.NRGBA{
+			R: uint8(80 + index%4*30),
+			G: 90,
+			B: 110,
+			A: 255,
+		}
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				img.SetNRGBA(x, y, fill)
+			}
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, img); err != nil {
+		return provider.Result{}, err
+	}
+	return provider.Result{PNG: encoded.Bytes()}, nil
+}
 
 func WritePackWithReferences(t *testing.T) string {
 	t.Helper()
@@ -69,6 +123,7 @@ func WritePack(t *testing.T) string {
       "kind": "animated",
       "archetype": "agile-armored-humanoid",
       "description": "Elegant demonic duelist.",
+      "magicSources": [],
       "identityLocks": ["Gold horned silhouette.", "Sword remains in the right hand."],
       "registration": "grounded",
       "size": {"width":16,"height":16},
@@ -93,6 +148,7 @@ func WritePack(t *testing.T) string {
       "family":"ground",
       "registration":"centered",
       "description":"Smooth grass tile.",
+      "magicSources":[],
       "size":{"width":16,"height":16},
       "deploy":{"pathTemplate":"terrain/{object}.png"}
     }
@@ -115,6 +171,7 @@ func WriteFullUnitPack(t *testing.T) string {
       "kind":"animated",
       "archetype":"heavy-armored-humanoid",
       "description":"Heavy silver-and-gold knight with a crested helmet, kite shield, and sword.",
+      "magicSources":[],
       "identityLocks":[
         "Helmet has a swept gold crest and angular narrow visor.",
         "Shield remains a blue-and-gold kite shield with cross heraldry.",
@@ -149,6 +206,7 @@ func WriteFullUnitPack(t *testing.T) string {
       "family":"ground",
       "registration":"centered",
       "description":"Smooth grass tile.",
+      "magicSources":[],
       "size":{"width":16,"height":16},
       "deploy":{"pathTemplate":"terrain/{object}.png"}
     }
@@ -172,6 +230,44 @@ func WriteFullUnitPack(t *testing.T) string {
 			}
 		}
 	}
+	return dir
+}
+
+func WriteStaticSetPack(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeStyleEvidence(t, dir)
+	objects := `[
+    {
+      "id":"fortification",
+      "kind":"static-set",
+      "family":"ground",
+      "registration":"grounded",
+      "description":"One coherent former black-stone fortification.",
+      "magicSources":[],
+      "parts":[
+        {
+          "id":"tall-horizontal",
+          "role":"surviving horizontal section",
+          "description":"Tall surviving masonry with intact joins.",
+          "size":{"width":96,"height":80},
+          "deploy":{"pathTemplate":"terrain/fortification/tall-horizontal.png"}
+        },
+        {
+          "id":"collapse-left",
+          "role":"left collapse transition",
+          "description":"Stepped broken courses ending at a clear passage.",
+          "size":{"width":80,"height":64},
+          "deploy":{"pathTemplate":"terrain/fortification/collapse-left.png"}
+        }
+      ]
+    }
+  ]`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "sprites.json"),
+		[]byte(packJSON(objects)),
+		0o644,
+	))
 	return dir
 }
 
@@ -211,7 +307,7 @@ func writeStyleEvidence(t *testing.T, dir string) {
 
 func packJSON(objects string) string {
 	return `{
-  "version":5,
+  "version":6,
   "outputDir":"output",
   "deployDir":"deploy",
   "style":{

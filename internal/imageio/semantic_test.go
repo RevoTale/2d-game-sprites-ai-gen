@@ -23,6 +23,116 @@ func TestSemanticAnimationLayoutUsesLogicalAnchorsWithOuterReserve(t *testing.T)
 	}, layout.Anchors)
 }
 
+func TestSemanticStaticSetLayoutFitsNativeTargetCanvases(t *testing.T) {
+	sizes := []image.Point{
+		{X: 384, Y: 320}, {X: 320, Y: 384},
+		{X: 384, Y: 384}, {X: 384, Y: 384},
+		{X: 384, Y: 224}, {X: 224, Y: 352},
+		{X: 352, Y: 288}, {X: 352, Y: 288},
+		{X: 352, Y: 352}, {X: 288, Y: 192},
+		{X: 288, Y: 192},
+	}
+
+	layout, err := SemanticStaticSetLayout(sizes)
+
+	require.NoError(t, err)
+	require.Equal(t, image.Pt(1856, 1408), layout.Canvas())
+	require.Equal(t, 448, layout.AnchorSpacing)
+	require.Equal(t, image.Pt(256, 448), layout.Anchors[0])
+	require.Equal(t, image.Pt(1600, 448), layout.Anchors[3])
+	require.Equal(t, image.Pt(1152, 1344), layout.Anchors[10])
+}
+
+func TestWriteSemanticPlaceholderBoardCreatesOneSeparatedMarkerPerAnchor(t *testing.T) {
+	layout, err := SemanticAnimationLayout(1, 2)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "layout-source.png")
+
+	require.NoError(t, WriteSemanticPlaceholderBoard(
+		path,
+		layout,
+		[]image.Point{{X: 96, Y: 80}, {X: 80, Y: 64}},
+		256,
+	))
+
+	board, err := decodeNRGBA(path)
+	require.NoError(t, err)
+	require.Equal(t, layout.Canvas(), board.Bounds().Size())
+	poses, err := RecoverSemanticPoses(path, layout, nil)
+	require.NoError(t, err)
+	require.Len(t, poses, 2)
+	require.Less(t, poses[0].Bounds.Max.X, poses[1].Bounds.Min.X)
+	for index, pose := range poses {
+		require.Equal(t, index, pose.Index)
+		require.Equal(t, layout.Anchors[index].Y, pose.Bounds.Max.Y)
+	}
+}
+
+func TestWriteSemanticEditMaskCreatesSeparatedTransparentRegions(t *testing.T) {
+	layout, err := SemanticAnimationLayout(1, 2)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "edit-mask.png")
+
+	require.NoError(t, WriteSemanticEditMask(
+		path,
+		layout,
+		[]image.Point{{X: 96, Y: 80}, {X: 80, Y: 64}},
+		256,
+		24,
+	))
+
+	mask, err := decodeNRGBA(path)
+	require.NoError(t, err)
+	require.Equal(t, layout.Canvas(), mask.Bounds().Size())
+	require.Zero(t, mask.NRGBAAt(layout.Anchors[0].X, layout.Anchors[0].Y-1).A)
+	require.Zero(t, mask.NRGBAAt(layout.Anchors[1].X, layout.Anchors[1].Y-1).A)
+	middle := image.Pt(
+		(layout.Anchors[0].X+layout.Anchors[1].X)/2,
+		layout.Anchors[0].Y,
+	)
+	require.Equal(t, uint8(255), mask.NRGBAAt(middle.X, middle.Y).A)
+}
+
+func TestWriteSemanticEditMaskFitsDenseElevenPartLayoutSafetyReserve(t *testing.T) {
+	layout, err := SemanticMasterLayout(11)
+	require.NoError(t, err)
+	sizes := []image.Point{
+		{X: 192, Y: 160}, {X: 160, Y: 192},
+		{X: 192, Y: 192}, {X: 192, Y: 192},
+		{X: 192, Y: 112}, {X: 112, Y: 176},
+		{X: 176, Y: 144}, {X: 176, Y: 144},
+		{X: 176, Y: 176}, {X: 144, Y: 96},
+		{X: 144, Y: 96},
+	}
+	path := filepath.Join(t.TempDir(), "edit-mask.png")
+
+	require.NoError(t, WriteSemanticEditMask(path, layout, sizes, 208, 24))
+
+	mask, err := decodeNRGBA(path)
+	require.NoError(t, err)
+	require.Equal(t, uint8(255), mask.NRGBAAt(7, 7).A)
+	for _, anchor := range layout.Anchors {
+		require.Zero(t, mask.NRGBAAt(anchor.X, anchor.Y-1).A)
+	}
+}
+
+func TestWriteSemanticSizedEditMaskUsesEachProductionSafeBounds(t *testing.T) {
+	sizes := []image.Point{{X: 384, Y: 320}, {X: 224, Y: 352}}
+	layout, err := SemanticStaticSetLayout(sizes)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "edit-mask.png")
+
+	require.NoError(t, WriteSemanticSizedEditMask(path, layout, sizes))
+
+	mask, err := decodeNRGBA(path)
+	require.NoError(t, err)
+	for _, anchor := range layout.Anchors {
+		require.Zero(t, mask.NRGBAAt(anchor.X, anchor.Y-1).A)
+	}
+	middle := (layout.Anchors[0].X + layout.Anchors[1].X) / 2
+	require.Equal(t, uint8(255), mask.NRGBAAt(middle, layout.Anchors[0].Y-1).A)
+}
+
 func TestWriteSemanticBoardAtNativeScaleUsesOneReductionForAsymmetricOuterPose(t *testing.T) {
 	layout, err := SemanticAnimationLayout(3, 4)
 	require.NoError(t, err)
@@ -135,6 +245,63 @@ func TestRecoverSemanticPosesAssignsDetachedComponentOutsideExactBisector(t *tes
 	require.NoError(t, err)
 	require.Len(t, poses[0].Components, 1)
 	require.Len(t, poses[1].Components, 2)
+}
+
+func TestRecoverSemanticPosesAttachesSmallTrailingFragmentToNearbyGroup(t *testing.T) {
+	layout, err := SemanticMasterLayout(11)
+	require.NoError(t, err)
+	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
+	for _, anchor := range layout.Anchors[:10] {
+		fillOpaque(
+			board,
+			image.Rect(anchor.X-50, anchor.Y-100, anchor.X+50, anchor.Y),
+			color.NRGBA{R: 30, G: 80, B: 180, A: 255},
+		)
+	}
+	last := layout.Anchors[10]
+	fillOpaque(
+		board,
+		image.Rect(last.X-74, last.Y-100, last.X+366, last.Y),
+		color.NRGBA{R: 30, G: 80, B: 180, A: 255},
+	)
+	fillOpaque(
+		board,
+		image.Rect(last.X+376, last.Y+26, last.X+390, last.Y+38),
+		color.NRGBA{R: 220, G: 190, B: 80, A: 255},
+	)
+	path := filepath.Join(t.TempDir(), "board.png")
+	require.NoError(t, writePNG(path, board))
+
+	poses, err := RecoverSemanticPoses(path, layout, nil)
+
+	require.NoError(t, err)
+	require.Len(t, poses, 11)
+	require.Len(t, poses[10].Components, 2)
+	require.Equal(t, image.Rect(last.X-74, last.Y-100, last.X+390, last.Y+38), poses[10].Bounds)
+}
+
+func TestRecoverSemanticPosesRejectsDistantSmallTrailingFragment(t *testing.T) {
+	layout, err := SemanticMasterLayout(3)
+	require.NoError(t, err)
+	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
+	for _, anchor := range layout.Anchors {
+		fillOpaque(
+			board,
+			image.Rect(anchor.X-50, anchor.Y-100, anchor.X+50, anchor.Y),
+			color.NRGBA{R: 30, G: 80, B: 180, A: 255},
+		)
+	}
+	fillOpaque(
+		board,
+		image.Rect(layout.CanvasWidth-100, layout.CanvasHeight-100, layout.CanvasWidth-90, layout.CanvasHeight-90),
+		color.NRGBA{R: 220, G: 190, B: 80, A: 255},
+	)
+	path := filepath.Join(t.TempDir(), "board.png")
+	require.NoError(t, writePNG(path, board))
+
+	_, err = RecoverSemanticPoses(path, layout, nil)
+
+	require.ErrorContains(t, err, "no pose ownership")
 }
 
 func TestRecoverSemanticPosesRejectsMergedPrimaryBodies(t *testing.T) {

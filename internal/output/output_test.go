@@ -9,38 +9,47 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestValidateAcceptsV11Layout(t *testing.T) {
+func TestValidateAcceptsV12Layout(t *testing.T) {
 	root := t.TempDir()
 	paths := []string{
-		"runs/v11/manifest.json",
-		"runs/v11/targets/grass/attempts/001/evidence.json",
-		"runs/v11/targets/grass/attempts/001/candidates/01/metrics.json",
-		"runs/v11/targets/style-guide/review/style-guide-96.png",
-		"runs/v11/targets/grass/review/battlefield-preview-96.png",
-		"runs/v11/targets/grass/review/tiled-repeat-3x3.png",
-		"runs/v11/intermediates/knight/character-master/canonical-profile.json",
-		"runs/v11/intermediates/knight/character-master/canonical-profile-overlay.png",
-		"runs/v11/intermediates/knight/character-master/current-directional-references.png",
-		"runs/v11/intermediates/knight/character-master/provider/direction-references/right.png",
-		"runs/v11/intermediates/knight/character-master/attempts/001/evidence.json",
-		"runs/v11/intermediates/knight/character-master/attempts/001/candidates/01/raw-candidate.png",
-		"runs/v11/intermediates/knight/character-master/recovered/00.png",
-		"runs/v11/intermediates/knight/character-master/review/ownership.png",
-		"runs/v11/intermediates/knight/animations/walk/master-comparison-guide.png",
-		"runs/v11/intermediates/knight/animations/walk/scale-calibration.json",
-		"runs/v11/intermediates/knight/animations/walk/recovered/00.png",
-		"runs/v11/intermediates/knight/animations/walk/review/recovered-poses.png",
-		"runs/v11/units/knight/review/complete-unit.png",
-		"runs/v11/units/knight/review/portrait-96.png",
-		"runs/v11/units/knight/review/master-directions/right.png",
-		"runs/v11/units/knight/review/gifs/walk-right.gif",
+		"catalog/catalog.json",
+		"catalog/index.html",
+		"catalog/assets/terrain-details-stone-cluster-01.png",
+		"runs/v12/manifest.json",
+		"runs/v12/targets/grass/attempts/001/evidence.json",
+		"runs/v12/targets/grass/attempts/001/candidates/01/metrics.json",
+		"runs/v12/targets/style-guide/review/style-guide-96.png",
+		"runs/v12/targets/grass/review/battlefield-preview-96.png",
+		"runs/v12/targets/grass/review/tiled-repeat-3x3.png",
+		"runs/v12/intermediates/knight/character-master/canonical-profile.json",
+		"runs/v12/intermediates/knight/character-master/canonical-profile-overlay.png",
+		"runs/v12/intermediates/knight/character-master/current-directional-references.png",
+		"runs/v12/intermediates/knight/character-master/provider/direction-references/right.png",
+		"runs/v12/intermediates/knight/character-master/attempts/001/evidence.json",
+		"runs/v12/intermediates/knight/character-master/attempts/001/candidates/01/raw-candidate.png",
+		"runs/v12/intermediates/knight/character-master/recovered/00.png",
+		"runs/v12/intermediates/knight/character-master/review/ownership.png",
+		"runs/v12/intermediates/knight/animations/walk/master-comparison-guide.png",
+		"runs/v12/intermediates/knight/animations/walk/scale-calibration.json",
+		"runs/v12/intermediates/knight/animations/walk/recovered/00.png",
+		"runs/v12/intermediates/knight/animations/walk/review/recovered-poses.png",
+		"runs/v12/units/knight/review/complete-unit.png",
+		"runs/v12/units/knight/review/portrait-96.png",
+		"runs/v12/units/knight/review/master-directions/right.png",
+		"runs/v12/units/knight/review/gifs/walk-right.gif",
+		"runs/v12/static-sets/fortification/prompt.md",
+		"runs/v12/static-sets/fortification/recovered/00.png",
+		"runs/v12/static-sets/fortification/review/ownership.png",
+		"runs/v12/static-sets/fortification/review/runtime-overrides/fortification-part-wall.png",
+		"runs/v12/static-sets/fortification/attempts/001/evidence.json",
+		"runs/v12/static-sets/fortification/attempts/001/candidates/01/raw-candidate.png",
 	}
 	for _, relative := range paths {
 		path := filepath.Join(root, filepath.FromSlash(relative))
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 		content := []byte("fixture")
-		if relative == "runs/v11/manifest.json" {
-			content = []byte(`{"version":11}`)
+		if relative == "runs/v12/manifest.json" {
+			content = []byte(`{"version":12}`)
 		}
 		require.NoError(t, os.WriteFile(path, content, 0o644))
 	}
@@ -48,12 +57,23 @@ func TestValidateAcceptsV11Layout(t *testing.T) {
 	require.NoError(t, output.Validate(root))
 }
 
-func TestValidateRejectsLegacyLayoutInsideV11Run(t *testing.T) {
+func TestValidateRejectsUnexpectedCatalogFile(t *testing.T) {
 	root := t.TempDir()
-	manifest := filepath.Join(root, "runs", "v11", "manifest.json")
+	path := filepath.Join(root, "catalog", "app.js")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("unexpected"), 0o644))
+
+	err := output.Validate(root)
+
+	require.ErrorContains(t, err, "catalog/app.js")
+}
+
+func TestValidateRejectsLegacyLayoutInsideV12Run(t *testing.T) {
+	root := t.TempDir()
+	manifest := filepath.Join(root, "runs", "v12", "manifest.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(manifest), 0o755))
-	require.NoError(t, os.WriteFile(manifest, []byte(`{"version":11}`), 0o644))
-	path := filepath.Join(root, "runs", "v11", "intermediates", "knight", "direction-seeds", "normalized.png")
+	require.NoError(t, os.WriteFile(manifest, []byte(`{"version":12}`), 0o644))
+	path := filepath.Join(root, "runs", "v12", "intermediates", "knight", "direction-seeds", "normalized.png")
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte("fixture"), 0o644))
 
@@ -83,4 +103,25 @@ func TestValidateRejectsUnexpectedManagedRunFileWithExactPath(t *testing.T) {
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "runs/run/targets/knight/notes.txt")
+}
+
+func TestValidateRejectsNestedStaticSetRuntimeOverride(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(
+		root,
+		"runs",
+		"run",
+		"static-sets",
+		"fortification",
+		"review",
+		"runtime-overrides",
+		"nested",
+		"wall.png",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("unexpected"), 0o644))
+
+	err := output.Validate(root)
+
+	require.ErrorContains(t, err, "runtime-overrides/nested/wall.png")
 }

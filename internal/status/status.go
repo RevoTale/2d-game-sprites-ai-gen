@@ -1,4 +1,4 @@
-// Package status renders manifest-V11 scope summaries and executable next actions.
+// Package status renders manifest-V12 scope summaries and executable next actions.
 package status
 
 import (
@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/generate"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
 )
 
@@ -60,10 +61,69 @@ func Print(writer io.Writer, manifest *generate.Manifest, all []targets.Target, 
 	for _, objectID := range objectIDs {
 		printUnit(writer, manifest, objectID)
 	}
+	printedStaticSets := map[string]bool{}
 	for _, target := range statics {
+		if target.ObjectKind == pack.KindStaticSet {
+			if !printedStaticSets[target.ObjectID] {
+				printStaticSet(writer, manifest, target.ObjectID, statics)
+				printedStaticSets[target.ObjectID] = true
+			}
+			continue
+		}
 		printStatic(writer, manifest, target)
 	}
 	return nil
+}
+
+func printStaticSet(
+	writer io.Writer,
+	manifest *generate.Manifest,
+	objectID string,
+	selected []targets.Target,
+) {
+	set := manifest.Intermediates[pack.KindStaticSet+":"+objectID]
+	if set == nil {
+		fmt.Fprintf(writer, "static_set: %s state=%s\n", objectID, generate.StatusPending)
+		fmt.Fprintf(writer, "next: sprites-ai-gen generate --run %s --object %s\n", manifest.RunID, objectID)
+		return
+	}
+	fmt.Fprintf(writer, "static_set: %s state=%s lineage=%s\n", objectID, set.Status, set.Lineage)
+	printFindings(writer, set.HardRejections, set.Warnings)
+	printCandidate(writer, set)
+	for _, path := range artifactPaths(set.Artifacts) {
+		fmt.Fprintf(writer, "artifact: %s\n", path)
+	}
+	for _, target := range selected {
+		if target.ObjectID != objectID {
+			continue
+		}
+		state := manifest.Targets[target.ID]
+		if state == nil {
+			continue
+		}
+		fmt.Fprintf(
+			writer,
+			"part: %s logical=%dx%d intrinsic=%dx%d density=%d state=%s\n",
+			target.ID,
+			state.LogicalSize.Width,
+			state.LogicalSize.Height,
+			state.IntrinsicSize.Width,
+			state.IntrinsicSize.Height,
+			state.SourceDensity,
+			state.Status,
+		)
+		for _, path := range artifactPaths(state.Artifacts) {
+			fmt.Fprintf(writer, "artifact: %s\n", path)
+		}
+	}
+	switch set.Status {
+	case generate.StatusAwaitingReview:
+		fmt.Fprintf(writer, "next: sprites-ai-gen review --run %s --object %s --status accepted\n", manifest.RunID, objectID)
+	case generate.StatusRejected:
+		fmt.Fprintf(writer, "next: sprites-ai-gen generate --run auto --object %s\n", objectID)
+	case generate.StatusAccepted:
+		fmt.Fprintf(writer, "next: sprites-ai-gen deploy --run %s --object %s --dry-run\n", manifest.RunID, objectID)
+	}
 }
 
 func printUnit(writer io.Writer, manifest *generate.Manifest, objectID string) {
@@ -214,6 +274,7 @@ func artifactPaths(artifacts generate.ReviewArtifacts) []string {
 		artifacts.PortraitPreviewPath,
 		artifacts.BattlefieldPreviewPath,
 		artifacts.TiledPreviewPath,
+		artifacts.RuntimeOverrideRoot,
 	}
 	paths = append(paths, artifacts.AnimationBoardPaths...)
 	paths = append(paths, artifacts.AnimationGIFPaths...)

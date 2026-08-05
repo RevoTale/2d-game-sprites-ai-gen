@@ -11,31 +11,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoadV5DoesNotReadThemeAndAllowsMissingBootstrapGuide(t *testing.T) {
+func TestLoadV6DoesNotReadThemeAndAllowsMissingBootstrapGuide(t *testing.T) {
 	dir := writeV5ContractPack(t)
 
 	p, err := pack.Load(dir)
 
 	require.NoError(t, err)
-	require.Equal(t, 5, p.Version)
+	require.Equal(t, 6, p.Version)
 	require.Equal(t, "compact-dark-fantasy-tactics", p.Style.ID)
 	require.NoFileExists(t, filepath.Join(dir, p.Style.Reference.Path))
 }
 
-func TestLoadRejectsPreV5PackWithDirectMigrationError(t *testing.T) {
+func TestLoadRejectsV5PackWithDirectMigrationError(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "sprites.json"),
-		[]byte(`{"version":4,"objects":[]}`),
+		[]byte(`{"version":5,"objects":[]}`),
 		0o644,
 	))
 
 	_, err := pack.Load(dir)
 
-	require.ErrorContains(t, err, "sprites.json v4 is unsupported; migrate the pack to v5")
+	require.ErrorContains(t, err, "sprites.json v5 is unsupported; migrate the pack to v6")
 }
 
-func TestDecodeV5RejectsUnknownStyleFields(t *testing.T) {
+func TestDecodeV6RejectsUnknownStyleFields(t *testing.T) {
 	data := strings.Replace(
 		v5ContractJSON(),
 		`"description": "Original compact dark-fantasy tactics pixel art."`,
@@ -48,7 +48,7 @@ func TestDecodeV5RejectsUnknownStyleFields(t *testing.T) {
 	require.ErrorContains(t, err, `unknown field "temperature"`)
 }
 
-func TestValidateV5RequiresKnownObjectArchetypesAndFamilies(t *testing.T) {
+func TestValidateV6RequiresKnownObjectArchetypesAndFamilies(t *testing.T) {
 	tests := []struct {
 		name    string
 		replace string
@@ -87,7 +87,7 @@ func TestValidateV5RequiresKnownObjectArchetypesAndFamilies(t *testing.T) {
 	}
 }
 
-func TestValidateV5AllowsOnlyExactLegacy320DirectionReferencesFor384Output(t *testing.T) {
+func TestValidateV6AllowsOnlyExactLegacy320DirectionReferencesFor384Output(t *testing.T) {
 	dir := testkit.WriteFullUnitPack(t)
 	for _, direction := range []string{"down", "up", "right"} {
 		require.NoError(t, os.WriteFile(
@@ -135,7 +135,7 @@ func writeV5ContractPack(t *testing.T) string {
 
 func v5ContractJSON() string {
 	return `{
-  "version": 5,
+  "version": 6,
   "outputDir": "output",
   "deployDir": "deploy",
   "style": {
@@ -193,6 +193,7 @@ func v5ContractJSON() string {
     "kind": "animated",
     "archetype": "heavy-armored-humanoid",
     "description": "Compact silver-and-gold heroic knight.",
+    "magicSources": [],
     "identityLocks": ["The swept crest, kite shield, and sword remain readable."],
     "registration": "grounded",
     "size": {"width": 16, "height": 16},
@@ -219,13 +220,14 @@ func v5ContractJSON() string {
     "renderMode": "opaque-tile",
     "registration": "canvas",
     "description": "Quiet dark moss battlefield ground.",
+    "magicSources": [],
     "size": {"width":16,"height":16},
     "deploy": {"pathTemplate":"terrain/ground.png"}
   }]
 }`
 }
 
-func TestValidateV5RequiresKnownUnitScaleClass(t *testing.T) {
+func TestValidateV6RequiresKnownUnitScaleClass(t *testing.T) {
 	tests := []struct {
 		name        string
 		scaleClass  string

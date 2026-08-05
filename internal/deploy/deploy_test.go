@@ -34,6 +34,45 @@ func TestStaticDeploymentRemainsTargetAtomic(t *testing.T) {
 	require.FileExists(t, filepath.Join(deployDir, "terrain", "grass.png"))
 }
 
+func TestStaticSetDeploymentPlanContainsCompleteSet(t *testing.T) {
+	_, all, outputDir, deployDir := generatedAcceptedStaticSet(t)
+
+	plan, err := deploy.BuildPlan(all, deploy.Options{
+		OutputDir: outputDir,
+		RunID:     "run",
+		DeployDir: deployDir,
+		Filter:    targets.Filter{Object: "fortification"},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, plan.Replace, 2)
+	require.Empty(t, plan.Unchanged)
+	for _, item := range plan.Replace {
+		require.Equal(t, "static-set:fortification", item.GroupID)
+	}
+}
+
+func TestStaleStaticSetPartBlocksCompleteSetBeforeWrites(t *testing.T) {
+	_, all, outputDir, deployDir := generatedAcceptedStaticSet(t)
+	destination := filepath.Join(deployDir, "terrain", "fortification", "collapse-left.png")
+	require.NoError(t, os.WriteFile(destination, testkit.PNGWithMargin(t, 80, 64, 8), 0o644))
+
+	plan, err := deploy.BuildPlan(all, deploy.Options{
+		OutputDir: outputDir,
+		RunID:     "run",
+		DeployDir: deployDir,
+		Filter:    targets.Filter{Object: "fortification"},
+	})
+
+	require.ErrorContains(t, err, "deployment blocked")
+	require.Empty(t, plan.Replace)
+	require.Len(t, plan.Unchanged, 2)
+	for _, item := range plan.Unchanged {
+		require.True(t, item.Blocking)
+		require.Equal(t, "static-set:fortification", item.GroupID)
+	}
+}
+
 func TestUnitDeployDryPlanContainsAllFrames(t *testing.T) {
 	dir, all, outputDir, deployDir := generatedAcceptedUnit(t)
 
@@ -145,6 +184,36 @@ func generatedAcceptedUnit(t *testing.T) (string, []targets.Target, string, stri
 	_, err := generate.Run(context.Background(), all, provider.Fake{}, generate.Options{OutputDir: outputDir, DeployDir: deployDir, RunID: "run", Filter: filter})
 	require.NoError(t, err)
 	_, err = review.Apply(all, review.Options{OutputDir: outputDir, RunID: "run", Filter: filter, Status: generate.StatusAccepted})
+	require.NoError(t, err)
+	return dir, all, outputDir, deployDir
+}
+
+func generatedAcceptedStaticSet(t *testing.T) (string, []targets.Target, string, string) {
+	t.Helper()
+	dir := testkit.WriteStaticSetPack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	outputDir := filepath.Join(dir, p.OutputDir)
+	deployDir := filepath.Join(dir, p.DeployDir)
+	for _, target := range all {
+		path, err := targets.DeployPath(deployDir, target)
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, testkit.PNG(t, target.Size.Width, target.Size.Height), 0o644))
+	}
+	filter := targets.Filter{Object: "fortification"}
+	_, err := generate.Run(context.Background(), all, &testkit.StaticSetProvider{}, generate.Options{
+		OutputDir: outputDir,
+		DeployDir: deployDir,
+		RunID:     "run",
+		Filter:    filter,
+	})
+	require.NoError(t, err)
+	_, err = review.Apply(all, review.Options{
+		OutputDir: outputDir,
+		RunID:     "run",
+		Filter:    filter,
+		Status:    generate.StatusAccepted,
+	})
 	require.NoError(t, err)
 	return dir, all, outputDir, deployDir
 }

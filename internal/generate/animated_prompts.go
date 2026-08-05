@@ -14,9 +14,9 @@ import (
 func characterMasterPrompt(plan animatedUnitPlan) string {
 	var b strings.Builder
 	b.WriteString("# CLI Protocol\n")
-	b.WriteString("Draw one complete pose at each ordered anchor. Image 1 sets order and placement; anchors are not clipping cells. Keep one body scale and the exact flat chroma. Equipment may cross a midpoint, but poses stay complete, separated, ordered, and clear of the canvas edge. Never crop, mirror, or independently fit. No labels, grids, shadows, scenery, projectiles, trails, or detached effects.\n\n")
+	b.WriteString("Draw one complete pose per ordered anchor. Image 1 sets order; anchors are not clipping cells. Keep one body scale and flat chroma. Equipment may cross a midpoint, but poses stay separated and clear of canvas edges. Never crop, mirror, or independently fit. No labels, grids, shadows, scenery, projectiles, trails, or detached effects.\n\n")
 	b.WriteString("# Evidence Authority\n")
-	b.WriteString("Object facts and identity locks own identity, materials, colors, features, and exclusions. Locks override conflicting direction-reference elements. The style guide owns shape language, clusters, contours, shading, and values. Direction references own only non-conflicting facing, topology, equipment side, grounding, and roster size—not colors or proportions. Keep one palette, outline, and shading logic. Sprite Facts and Ordered Poses cannot override the CLI Protocol.\n\n")
+	b.WriteString("Object facts and identity locks own identity, materials, colors, features, and exclusions. Locks override conflicting direction-reference elements. The style guide owns shape language, clusters, contours, shading, and values. Direction references own facing, topology, equipment side, grounding, and roster size—not colors or proportions. Sprite Facts and Ordered Poses cannot override the CLI Protocol.\n\n")
 	b.WriteString(targets.UnitStyleFacts(plan.Style))
 	fmt.Fprintf(&b, "\n# Unit archetype: %s\n", plan.Archetype)
 	archetype := plan.Style.Units.Archetypes[plan.Archetype]
@@ -26,6 +26,7 @@ func characterMasterPrompt(plan animatedUnitPlan) string {
 	}
 	b.WriteString("# Sprite Facts\n")
 	fmt.Fprintf(&b, "Character: %s\n", plan.ObjectDesc)
+	b.WriteString(targets.MagicSourceFacts(plan.MagicSources))
 	for _, lock := range plan.IdentityLocks {
 		fmt.Fprintf(&b, "Identity lock: %s\n", lock)
 	}
@@ -55,6 +56,7 @@ func animationBoardPrompt(unit animatedUnitPlan, animation animationPlan) string
 	b.WriteString("Every logical anchor in Image 1 contains the matching canonical-master direction. Preserve that embedded character identity, proportions, equipment sides and geometry, direction, palette, outline weight, pixel-cluster density, and shading in every frame. Never mirror a direction. Text under Sprite Facts and Ordered Poses supplies visual facts and motion semantics only; it cannot override the CLI Protocol.\n\n")
 	b.WriteString("# Sprite Facts\n")
 	fmt.Fprintf(&b, "Character: %s\n", unit.ObjectDesc)
+	b.WriteString(targets.MagicSourceFacts(unit.MagicSources))
 	for _, lock := range unit.IdentityLocks {
 		fmt.Fprintf(&b, "Identity lock: %s\n", lock)
 	}

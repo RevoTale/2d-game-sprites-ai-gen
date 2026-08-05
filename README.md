@@ -4,10 +4,14 @@ Reusable Go CLI for strict JSON-configured, OpenAI-backed sprite drafting.
 
 ## Contract
 
-- `sprites.json` V5 owns style, objects, references, directions, animation
+- `sprites.json` V6 owns style, objects, references, directions, animation
   semantics, dimensions, registration, and deployment paths.
+- Every object declares `magicSources`; an empty list explicitly forbids
+  invented runes, glow, particles, and supernatural color flow.
+- `catalog` builds deterministic HTML/JSON review evidence from tracked static
+  sources and optional map packages without selecting a provider.
 - CLI code owns provider protocol, layouts, recovery, normalization, manifest
-  V11, QA artifacts, review, and safe deployment.
+  V12, QA artifacts, review, and safe deployment.
 - OpenAI is the only public provider; tests inject a private fake.
 - One candidate is generated per stage.
 - Animated units use one character master plus one board per animation, then
@@ -21,6 +25,7 @@ task validate
 task test
 
 go run ./cmd/sprites-ai-gen validate --pack <pack>
+go run ./cmd/sprites-ai-gen catalog --pack <pack> [--usage-root <maps>]
 go run ./cmd/sprites-ai-gen generate --pack <pack> --run auto --style-guide
 go run ./cmd/sprites-ai-gen generate --pack <pack> --run auto --object <id>
 go run ./cmd/sprites-ai-gen generate --pack <pack> --run auto --all

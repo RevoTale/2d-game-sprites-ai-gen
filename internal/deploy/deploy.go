@@ -15,6 +15,7 @@ import (
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/generate"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/imageio"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
 )
 
@@ -53,6 +54,10 @@ func BuildPlan(all []targets.Target, opts Options) (Plan, error) {
 	for _, key := range sortedGroupKeys(groups) {
 		group := groups[key]
 		if group[0].AnimationID == "" {
+			if group[0].ObjectKind == pack.KindStaticSet {
+				appendValidatedStaticSet(&plan, key, group, manifest, opts.DeployDir)
+				continue
+			}
 			appendStaticItem(&plan, group[0], manifest, opts.DeployDir)
 			continue
 		}
@@ -70,8 +75,13 @@ func BuildPlan(all []targets.Target, opts Options) (Plan, error) {
 func deploymentScope(all, selected []targets.Target) []targets.Target {
 	wanted := map[string]bool{}
 	objects := map[string]bool{}
+	staticSets := map[string]bool{}
 	for _, target := range selected {
 		if target.AnimationID == "" {
+			if target.ObjectKind == pack.KindStaticSet {
+				staticSets[target.ObjectID] = true
+				continue
+			}
 			wanted[target.ID] = true
 		} else {
 			objects[target.ObjectID] = true
@@ -79,7 +89,9 @@ func deploymentScope(all, selected []targets.Target) []targets.Target {
 	}
 	var scope []targets.Target
 	for _, target := range all {
-		if wanted[target.ID] || (target.AnimationID != "" && objects[target.ObjectID]) {
+		if wanted[target.ID] ||
+			(target.ObjectKind == pack.KindStaticSet && staticSets[target.ObjectID]) ||
+			(target.AnimationID != "" && objects[target.ObjectID]) {
 			scope = append(scope, target)
 		}
 	}
@@ -92,10 +104,80 @@ func groupTargets(scope []targets.Target) map[string][]targets.Target {
 		key := "static:" + target.ID
 		if target.AnimationID != "" {
 			key = "unit:" + target.ObjectID
+		} else if target.ObjectKind == pack.KindStaticSet {
+			key = pack.KindStaticSet + ":" + target.ObjectID
 		}
 		groups[key] = append(groups[key], target)
 	}
 	return groups
+}
+
+func appendValidatedStaticSet(
+	plan *Plan,
+	setID string,
+	group []targets.Target,
+	manifest *generate.Manifest,
+	deployDir string,
+) {
+	set := manifest.Intermediates[setID]
+	blockers := make([]string, 0)
+	if set != nil && set.Status == generate.StatusDeployed {
+		for _, target := range group {
+			path, _ := RenderPath(deployDir, target)
+			plan.Unchanged = append(plan.Unchanged, Item{
+				TargetID: target.ID, Path: path, GroupID: setID, Reason: "already deployed",
+			})
+		}
+		return
+	}
+	if set == nil || set.Status != generate.StatusAccepted || set.Review == nil ||
+		set.Review.Status != generate.StatusAccepted {
+		blockers = append(blockers, "complete static set is not accepted")
+	}
+	for _, target := range group {
+		state := manifest.Targets[target.ID]
+		if !deployable(state, true) {
+			blockers = append(blockers, target.ID+": "+stateReason(state))
+			continue
+		}
+		if len(state.Dependencies) != 1 || state.Dependencies[0] != setID ||
+			set == nil || state.SourceCandidate != set.Lineage {
+			blockers = append(blockers, target.ID+": static set lineage mismatch")
+		}
+		if err := validateStaticDimensions(target, state); err != nil {
+			blockers = append(blockers, target.ID+": "+err.Error())
+		}
+		path, err := RenderPath(deployDir, target)
+		if err != nil {
+			blockers = append(blockers, target.ID+": "+err.Error())
+			continue
+		}
+		if err := productionUnchanged(state, path); err != nil {
+			blockers = append(blockers, target.ID+": "+err.Error())
+		}
+	}
+	if len(blockers) != 0 {
+		reason := "static set blocked: " + strings.Join(blockers, "; ")
+		for _, target := range group {
+			path, _ := RenderPath(deployDir, target)
+			plan.Unchanged = append(plan.Unchanged, Item{
+				TargetID: target.ID,
+				Path:     path,
+				GroupID:  setID,
+				Reason:   reason,
+				Blocking: true,
+			})
+		}
+		return
+	}
+	for _, target := range group {
+		path, _ := RenderPath(deployDir, target)
+		plan.Replace = append(plan.Replace, Item{
+			TargetID: target.ID,
+			Path:     path,
+			GroupID:  setID,
+		})
+	}
 }
 
 func appendStaticItem(plan *Plan, target targets.Target, manifest *generate.Manifest, deployDir string) {
@@ -106,6 +188,15 @@ func appendStaticItem(plan *Plan, target targets.Target, manifest *generate.Mani
 	}
 	state := manifest.Targets[target.ID]
 	if deployable(state, true) {
+		if err := validateStaticDimensions(target, state); err != nil {
+			plan.Unchanged = append(plan.Unchanged, Item{
+				TargetID: target.ID,
+				Path:     path,
+				Reason:   err.Error(),
+				Blocking: true,
+			})
+			return
+		}
 		if err := productionUnchanged(state, path); err != nil {
 			plan.Unchanged = append(plan.Unchanged, Item{TargetID: target.ID, Path: path, Reason: err.Error(), Blocking: true})
 			return
@@ -114,6 +205,52 @@ func appendStaticItem(plan *Plan, target targets.Target, manifest *generate.Mani
 		return
 	}
 	plan.Unchanged = append(plan.Unchanged, Item{TargetID: target.ID, Path: path, Reason: stateReason(state)})
+}
+
+func validateStaticDimensions(
+	target targets.Target,
+	state *generate.TargetState,
+) error {
+	if state == nil || state.NormalizedPath == "" {
+		return errors.New("normalized source is missing")
+	}
+	if state.SourceDensity != 1 && state.SourceDensity != 2 {
+		return fmt.Errorf("source density %d is unsupported", state.SourceDensity)
+	}
+	if state.LogicalSize != target.Size {
+		return fmt.Errorf(
+			"logical size = %dx%d, want %dx%d from the current pack",
+			state.LogicalSize.Width,
+			state.LogicalSize.Height,
+			target.Size.Width,
+			target.Size.Height,
+		)
+	}
+	expected := image.Pt(
+		target.Size.Width*state.SourceDensity,
+		target.Size.Height*state.SourceDensity,
+	)
+	if state.IntrinsicSize.Width != expected.X ||
+		state.IntrinsicSize.Height != expected.Y {
+		return fmt.Errorf(
+			"intrinsic size evidence = %dx%d, want %v",
+			state.IntrinsicSize.Width,
+			state.IntrinsicSize.Height,
+			expected,
+		)
+	}
+	dimensions, err := imageio.PNGDimensions(state.NormalizedPath)
+	if err != nil {
+		return fmt.Errorf("normalized source is not a decodable PNG: %w", err)
+	}
+	if dimensions != expected {
+		return fmt.Errorf(
+			"normalized source dimensions = %v, want %v from the current pack",
+			dimensions,
+			expected,
+		)
+	}
+	return nil
 }
 
 func appendValidatedUnit(plan *Plan, unitID string, group []targets.Target, manifest *generate.Manifest, deployDir string) {
@@ -300,6 +437,7 @@ func Execute(all []targets.Target, opts Options) (Plan, error) {
 		state.Deploy = &generate.DeployRecord{Path: item.Path, GroupID: item.GroupID, DeployedAt: deployedAt, Skipped: skippedIDs(plan.Unchanged)}
 	}
 	markDeployedUnits(manifest, plan.Replace, deployedAt)
+	markDeployedStaticSets(manifest, plan.Replace, deployedAt)
 	generate.RefreshUnitStatuses(manifest)
 	if err := generate.Save(opts.OutputDir, opts.RunID, manifest); err != nil {
 		if rollbackErr := rollbackReplacements(staged); rollbackErr != nil {
@@ -308,6 +446,37 @@ func Execute(all []targets.Target, opts Options) (Plan, error) {
 		return plan, fmt.Errorf("save deployment manifest: %w", err)
 	}
 	return plan, nil
+}
+
+func markDeployedStaticSets(
+	manifest *generate.Manifest,
+	replaced []Item,
+	deployedAt string,
+) {
+	sets := map[string]bool{}
+	for _, item := range replaced {
+		if strings.HasPrefix(item.GroupID, "static-set:") {
+			sets[item.GroupID] = true
+		}
+	}
+	for setID := range sets {
+		set := manifest.Intermediates[setID]
+		if set == nil {
+			continue
+		}
+		deployed := len(set.TargetIDs) != 0
+		for _, targetID := range set.TargetIDs {
+			state := manifest.Targets[targetID]
+			if state == nil || state.Status != generate.StatusDeployed {
+				deployed = false
+				break
+			}
+		}
+		if deployed {
+			set.Status = generate.StatusDeployed
+			set.Deploy = &generate.DeployRecord{Path: setID, GroupID: setID, DeployedAt: deployedAt}
+		}
+	}
 }
 
 func markDeployedUnits(manifest *generate.Manifest, replaced []Item, deployedAt string) {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/conditioning"
+	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/imageio"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/pack"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/provider"
 	"github.com/RevoTale/2d-game-sprites-ai-gen/internal/targets"
@@ -23,8 +24,8 @@ const (
 )
 
 type animatedWorkflowPlan struct {
-	StaticTargets []targets.Target
-	Units         []animatedUnitPlan
+	StaticGroups [][]targets.Target
+	Units        []animatedUnitPlan
 }
 
 type animatedUnitPlan struct {
@@ -40,6 +41,7 @@ type animatedUnitPlan struct {
 	ScaleClass       string
 	Size             pack.Size
 	ObjectDesc       string
+	MagicSources     []pack.MagicSource
 	IdentityLocks    []string
 	RegistrationMode string
 }
@@ -67,13 +69,15 @@ type animationFramePlan struct {
 func buildAnimatedPlan(all, selected []targets.Target) (animatedWorkflowPlan, error) {
 	plan := animatedWorkflowPlan{}
 	animatedObjects := map[string]bool{}
+	staticTargets := make([]targets.Target, 0, len(selected))
 	for _, target := range selected {
 		if target.AnimationID == "" {
-			plan.StaticTargets = append(plan.StaticTargets, target)
+			staticTargets = append(staticTargets, target)
 			continue
 		}
 		animatedObjects[target.ObjectID] = true
 	}
+	plan.StaticGroups = targets.AtomicGroups(staticTargets)
 	for _, objectID := range orderedSelectedObjects(all, animatedObjects) {
 		unit, err := buildAnimatedUnitPlan(all, objectID)
 		if err != nil {
@@ -104,6 +108,7 @@ func buildAnimatedUnitPlan(all []targets.Target, objectID string) (animatedUnitP
 		Archetype:        first.Archetype,
 		ScaleClass:       first.Style.Units.Archetypes[first.Archetype].ScaleClass,
 		Size:             first.Size,
+		MagicSources:     append([]pack.MagicSource{}, first.MagicSources...),
 		IdentityLocks:    append([]string(nil), first.IdentityLocks...),
 		IdentityInputs:   filterInputs(first.Inputs, conditioning.RoleStyle, conditioning.RoleIdentity),
 		RegistrationMode: first.RegistrationMode,
@@ -182,9 +187,14 @@ func preflightAnimated(plan animatedWorkflowPlan, capabilities provider.Capabili
 	if capabilities.References {
 		return nil
 	}
-	for _, target := range plan.StaticTargets {
-		if len(filterInputs(target.Inputs, conditioning.RoleStyle, conditioning.RoleIdentity)) != 0 {
-			return fmt.Errorf("target %q uses image references unsupported by the selected provider", target.ID)
+	for _, group := range plan.StaticGroups {
+		if len(group) != 0 && group[0].ObjectKind == pack.KindStaticSet && !capabilities.Masks {
+			return fmt.Errorf("static set %q requires provider mask support", group[0].ObjectID)
+		}
+		for _, target := range group {
+			if len(filterInputs(target.Inputs, conditioning.RoleStyle, conditioning.RoleIdentity)) != 0 {
+				return fmt.Errorf("target %q uses image references unsupported by the selected provider", target.ID)
+			}
 		}
 	}
 	return nil
@@ -206,15 +216,33 @@ func validateAnimatedStart(manifest *Manifest, plan animatedWorkflowPlan) error 
 func runAnimatedWorkflow(ctx context.Context, selected []targets.Target, plan animatedWorkflowPlan, gen provider.Provider, opts Options, manifest *Manifest) (Result, error) {
 	result := Result{RunID: opts.RunID}
 	opts.report(ProgressEvent{Stage: ProgressRunStarted, RunID: opts.RunID, Total: len(selected)})
-	for _, target := range plan.StaticTargets {
-		state := manifest.Targets[target.ID]
-		if shouldSkipGeneration(state) {
-			result.Skipped++
+	for _, group := range plan.StaticGroups {
+		if len(group) == 0 {
 			continue
 		}
-		if err := generateStaticTarget(ctx, gen, opts, manifest, target, state, result.Generated+1, len(selected)); err != nil {
+		if staticGroupComplete(manifest, group) {
+			result.Skipped += len(group)
+			continue
+		}
+		var err error
+		if group[0].ObjectKind == pack.KindStaticSet {
+			err = generateStaticSet(ctx, gen, opts, manifest, group)
+		} else {
+			target := group[0]
+			err = generateStaticTarget(
+				ctx,
+				gen,
+				opts,
+				manifest,
+				target,
+				manifest.Targets[target.ID],
+				result.Generated+1,
+				len(selected),
+			)
+		}
+		if err != nil {
 			if opts.ContinueOnError {
-				recordRunFailure(manifest, target.ObjectID, "static-target", err)
+				recordRunFailure(manifest, group[0].ObjectID, "static-target", err)
 				result.Failed++
 				if saveErr := Save(opts.OutputDir, opts.RunID, manifest); saveErr != nil {
 					return result, saveErr
@@ -224,6 +252,11 @@ func runAnimatedWorkflow(ctx context.Context, selected []targets.Target, plan an
 			return result, err
 		}
 		result.Generated++
+		for _, target := range group {
+			if state := manifest.Targets[target.ID]; state != nil && state.Status == StatusAwaitingReview {
+				result.AwaitingReview++
+			}
+		}
 		if err := Save(opts.OutputDir, opts.RunID, manifest); err != nil {
 			return result, err
 		}
@@ -262,6 +295,46 @@ func runAnimatedWorkflow(ctx context.Context, selected []targets.Target, plan an
 	}
 	opts.report(ProgressEvent{Stage: ProgressRunCompleted, RunID: opts.RunID, Total: len(selected)})
 	return result, nil
+}
+
+func staticGroupComplete(manifest *Manifest, group []targets.Target) bool {
+	if len(group) != 0 && group[0].ObjectKind == pack.KindStaticSet {
+		set := manifest.Intermediates[pack.KindStaticSet+":"+group[0].ObjectID]
+		if intermediateNeedsReprocessing(set) {
+			return false
+		}
+	}
+	for _, target := range group {
+		if !shouldSkipGeneration(manifest.Targets[target.ID]) {
+			return false
+		}
+	}
+	return true
+}
+
+func intermediateNeedsReprocessing(state *IntermediateState) bool {
+	if state == nil || state.Review != nil || len(state.Attempts) == 0 {
+		return false
+	}
+	latest := state.Attempts[len(state.Attempts)-1]
+	if len(latest.Candidates) != 1 {
+		return false
+	}
+	if latest.Candidates[0].QualityVersion < candidateQualityVersion {
+		return true
+	}
+	return state.Kind == pack.KindStaticSet &&
+		(state.StaticSetScale == nil ||
+			state.StaticSetScale.Version < imageio.StaticSetScaleCalibrationVersion ||
+			staticSetRuntimeOverrideMissing(state))
+}
+
+func staticSetRuntimeOverrideMissing(state *IntermediateState) bool {
+	if state.Artifacts.RuntimeOverrideRoot == "" {
+		return true
+	}
+	info, err := os.Stat(state.Artifacts.RuntimeOverrideRoot)
+	return err != nil || !info.IsDir()
 }
 
 func recordRunFailure(manifest *Manifest, objectID, stage string, err error) {
@@ -340,9 +413,16 @@ func readyIntermediate(state *IntermediateState) bool {
 // resume. A nil manifest represents a fresh run.
 func ProviderCallsRemaining(manifest *Manifest, selected []targets.Target) int {
 	animationsByObject := map[string]map[string]bool{}
+	staticSets := map[string]bool{}
 	total := 0
 	for _, target := range selected {
 		if target.AnimationID == "" {
+			if target.ObjectKind == pack.KindStaticSet {
+				if staticSets[target.ObjectID] {
+					continue
+				}
+				staticSets[target.ObjectID] = true
+			}
 			if manifest == nil {
 				total++
 				continue
