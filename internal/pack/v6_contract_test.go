@@ -135,17 +135,133 @@ func TestDecodeV6AcceptsAtomicStaticSetParts(t *testing.T) {
 	require.Len(t, p.Objects[0].Parts, 2)
 }
 
-func TestDecodeV6RejectsMalformedStaticSets(t *testing.T) {
-	valid := `{
-  "id":"shore-kit",
+func TestDecodeV6AcceptsCanvasRegisteredTransparentOverlaySet(t *testing.T) {
+	object := `{
+  "id":"weather-overlay-kit",
   "kind":"static-set",
   "family":"ruin",
-  "description":"Coupled mundane shore joins.",
+  "description":"Transparent weather overlays.",
+  "magicSources":[],
+  "renderMode":"transparent-overlay",
+  "registration":"canvas",
+  "parts":[
+    {
+      "id":"rain-a",
+      "role":"First registered weather overlay.",
+      "description":"Sparse rain streak overlay.",
+      "size":{"width":32,"height":32},
+      "deploy":{"pathTemplate":"weather/rain-a.png"}
+    },
+    {
+      "id":"rain-b",
+      "role":"Second registered weather overlay.",
+      "description":"Sparse rain streak overlay.",
+      "size":{"width":32,"height":32},
+      "deploy":{"pathTemplate":"weather/rain-b.png"}
+    }
+  ]
+}`
+
+	p, err := decodeAndValidateV6(t, v6MinimalPack(object))
+
+	require.NoError(t, err)
+	require.Equal(t, pack.RenderModeTransparentOverlay, p.Objects[0].RenderMode)
+}
+
+func TestDecodeV6AcceptsCanvasRegisteredMaterialSwatchSet(t *testing.T) {
+	object := `{
+  "id":"shore-materials",
+  "kind":"static-set",
+  "family":"ruin",
+  "description":"Full-bleed shoreline material swatches.",
+  "magicSources":[],
+  "renderMode":"material-swatch",
+  "registration":"canvas",
+  "parts":[
+    {
+      "id":"wet-earth",
+      "role":"Wet edge material.",
+      "description":"Opaque wet earth swatch.",
+      "size":{"width":128,"height":128},
+      "deploy":{"pathTemplate":"shore/wet-earth.png"}
+    },
+    {
+      "id":"moss",
+      "role":"Ground edge material.",
+      "description":"Opaque moss swatch.",
+      "size":{"width":128,"height":128},
+      "deploy":{"pathTemplate":"shore/moss.png"}
+    }
+  ]
+}`
+
+	p, err := decodeAndValidateV6(t, v6MinimalPack(object))
+
+	require.NoError(t, err)
+	require.Equal(t, pack.RenderModeMaterialSwatch, p.Objects[0].RenderMode)
+}
+
+func TestValidateV6RejectsMaterialSwatchOutsideStaticSet(t *testing.T) {
+	object := `{
+  "id":"shore-material",
+  "kind":"static",
+  "family":"ruin",
+  "description":"One material swatch.",
+  "magicSources":[],
+  "renderMode":"material-swatch",
+  "registration":"canvas",
+  "size":{"width":128,"height":128},
+  "deploy":{"pathTemplate":"shore/wet-earth.png"}
+}`
+
+	_, err := decodeAndValidateV6(t, v6MinimalPack(object))
+
+	require.ErrorContains(t, err, `renderMode "material-swatch" requires kind "static-set"`)
+}
+
+func TestValidateV6RequiresCanvasRegistrationForTransparentOverlay(t *testing.T) {
+	object := `{
+  "id":"weather-overlay-kit",
+  "kind":"static-set",
+  "family":"ruin",
+  "description":"Transparent weather overlays.",
+  "magicSources":[],
+  "renderMode":"transparent-overlay",
+  "registration":"centered",
+  "parts":[
+    {
+      "id":"rain-a",
+      "role":"First registered weather overlay.",
+      "description":"Sparse rain streak overlay.",
+      "size":{"width":32,"height":32},
+      "deploy":{"pathTemplate":"weather/rain-a.png"}
+    },
+    {
+      "id":"rain-b",
+      "role":"Second registered weather overlay.",
+      "description":"Sparse rain streak overlay.",
+      "size":{"width":32,"height":32},
+      "deploy":{"pathTemplate":"weather/rain-b.png"}
+    }
+  ]
+}`
+
+	_, err := decodeAndValidateV6(t, v6MinimalPack(object))
+
+	require.ErrorContains(t, err, `transparent-overlay object "weather-overlay-kit" registration must be "canvas"`)
+}
+
+func TestDecodeV6RejectsMalformedStaticSets(t *testing.T) {
+	valid := `{
+  "id":"wall-kit",
+  "kind":"static-set",
+  "family":"ruin",
+  "description":"Coupled mundane wall parts.",
   "magicSources":[],
   "registration":"centered",
   "parts":[
-    {"id":"edge","role":"Straight boundary.","description":"Wet earth edge.","size":{"width":32,"height":32},"deploy":{"pathTemplate":"terrain/shore/edge.png"}},
-    {"id":"corner","role":"Outer corner.","description":"Wet earth corner.","size":{"width":32,"height":32},"deploy":{"pathTemplate":"terrain/shore/corner.png"}}
+    {"id":"wall","role":"Straight wall.","description":"Worked stone wall.","size":{"width":32,"height":32},"deploy":{"pathTemplate":"terrain/wall/wall.png"}},
+    {"id":"corner","role":"Outer corner.","description":"Worked stone corner.","size":{"width":32,"height":32},"deploy":{"pathTemplate":"terrain/wall/corner.png"}}
   ]
 }`
 	tests := []struct {
@@ -155,9 +271,9 @@ func TestDecodeV6RejectsMalformedStaticSets(t *testing.T) {
 		wantErr string
 	}{
 		{name: "one part", old: `,
-    {"id":"corner","role":"Outer corner.","description":"Wet earth corner.","size":{"width":32,"height":32},"deploy":{"pathTemplate":"terrain/shore/corner.png"}}`, new: "", wantErr: "must contain at least two parts"},
-		{name: "duplicate part", old: `"id":"corner"`, new: `"id":"edge"`, wantErr: `duplicate part id "edge"`},
-		{name: "missing role", old: `"role":"Straight boundary."`, new: `"role":""`, wantErr: "role is required"},
+    {"id":"corner","role":"Outer corner.","description":"Worked stone corner.","size":{"width":32,"height":32},"deploy":{"pathTemplate":"terrain/wall/corner.png"}}`, new: "", wantErr: "must contain at least two parts"},
+		{name: "duplicate part", old: `"id":"corner"`, new: `"id":"wall"`, wantErr: `duplicate part id "wall"`},
+		{name: "missing role", old: `"role":"Straight wall."`, new: `"role":""`, wantErr: "role is required"},
 		{name: "object size", old: `"registration":"centered",`, new: `"registration":"centered","size":{"width":32,"height":32},`, wantErr: "must not define object size"},
 		{name: "object deploy", old: `"registration":"centered",`, new: `"registration":"centered","deploy":{"pathTemplate":"terrain/shore.png"},`, wantErr: "must not define object deploy"},
 	}

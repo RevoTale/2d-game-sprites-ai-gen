@@ -23,6 +23,8 @@ const (
 	KindStaticSet                 = "static-set"
 	RenderModeIsolated            = "isolated"
 	RenderModeOpaqueTile          = "opaque-tile"
+	RenderModeMaterialSwatch      = "material-swatch"
+	RenderModeTransparentOverlay  = "transparent-overlay"
 	RegistrationModeGrounded      = "grounded"
 	RegistrationModeCentered      = "centered"
 	RegistrationModeCanvas        = "canvas"
@@ -658,13 +660,35 @@ func validateRenderMode(obj Object) error {
 			return fmt.Errorf("animated object %q renderMode %q is unsupported", obj.ID, obj.RenderMode)
 		}
 		return nil
+	case RenderModeMaterialSwatch:
+		if obj.Kind != KindStaticSet {
+			return fmt.Errorf(
+				"object %q renderMode %q requires kind %q",
+				obj.ID,
+				obj.RenderMode,
+				KindStaticSet,
+			)
+		}
+		return nil
+	case RenderModeTransparentOverlay:
+		if obj.Kind != KindStaticSet {
+			return fmt.Errorf(
+				"object %q renderMode %q requires kind %q",
+				obj.ID,
+				obj.RenderMode,
+				KindStaticSet,
+			)
+		}
+		return nil
 	default:
 		return fmt.Errorf(
-			"object %q renderMode %q is unsupported; expected %q or %q",
+			"object %q renderMode %q is unsupported; expected %q, %q, %q, or %q",
 			obj.ID,
 			obj.RenderMode,
 			RenderModeIsolated,
 			RenderModeOpaqueTile,
+			RenderModeMaterialSwatch,
+			RenderModeTransparentOverlay,
 		)
 	}
 }
@@ -682,9 +706,18 @@ func validateRegistration(obj Object) error {
 			)
 		}
 	case KindStatic, KindStaticSet:
-		if EffectiveRenderMode(obj) == RenderModeOpaqueTile {
+		renderMode := EffectiveRenderMode(obj)
+		if renderMode == RenderModeOpaqueTile || renderMode == RenderModeMaterialSwatch {
 			if obj.Registration != RegistrationModeCanvas {
 				return fmt.Errorf("opaque-tile object %q registration must be %q", obj.ID, RegistrationModeCanvas)
+			}
+		} else if renderMode == RenderModeTransparentOverlay {
+			if obj.Registration != RegistrationModeCanvas {
+				return fmt.Errorf(
+					"transparent-overlay object %q registration must be %q",
+					obj.ID,
+					RegistrationModeCanvas,
+				)
 			}
 		} else if obj.Registration != RegistrationModeGrounded && obj.Registration != RegistrationModeCentered {
 			return fmt.Errorf(

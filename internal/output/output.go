@@ -23,6 +23,11 @@ var allowedRunFiles = []*regexp.Regexp{
 	regexp.MustCompile(`^runs/[^/]+/static-sets/[^/]+/provider/layout-source\.png$`),
 	regexp.MustCompile(`^runs/[^/]+/static-sets/[^/]+/recovered/[^/]+\.png$`),
 	regexp.MustCompile(`^runs/[^/]+/static-sets/[^/]+/review/(candidates|ownership|recovered-poses|native-parts|logical-parts)\.png$`),
+	regexp.MustCompile(`^runs/[^/]+/static-sets/[^/]+/review/loop\.gif$`),
+	// Historical ignored runs may contain this retired review artifact. The
+	// current generator no longer creates or consumes it.
+	regexp.MustCompile(`^runs/[^/]+/static-sets/[^/]+/review/assembled-shores\.png$`),
+	regexp.MustCompile(`^runs/[^/]+/static-sets/[^/]+/review/repeats/[a-z0-9][a-z0-9-]*-3x3\.png$`),
 	regexp.MustCompile(`^runs/[^/]+/static-sets/[^/]+/review/runtime-overrides/[a-z0-9][a-z0-9-]*\.png$`),
 	regexp.MustCompile(`^runs/[^/]+/static-sets/[^/]+/attempts/[^/]+/evidence\.json$`),
 	regexp.MustCompile(`^runs/[^/]+/static-sets/[^/]+/attempts/[^/]+/candidates/[^/]+/(raw-candidate\.png|normalized\.png|metrics\.json)$`),

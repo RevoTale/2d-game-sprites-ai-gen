@@ -133,6 +133,29 @@ func TestWriteSemanticSizedEditMaskUsesEachProductionSafeBounds(t *testing.T) {
 	require.Equal(t, uint8(255), mask.NRGBAAt(middle, layout.Anchors[0].Y-1).A)
 }
 
+func TestSemanticStaticSetLayoutUsesProviderMinimumCanvasForSmallParts(t *testing.T) {
+	t.Parallel()
+
+	layout, err := SemanticStaticSetLayout([]image.Point{
+		image.Pt(128, 128),
+		image.Pt(128, 128),
+		image.Pt(128, 128),
+	})
+	require.NoError(t, err)
+	require.Equal(t, image.Pt(1024, 1024), layout.Canvas())
+
+	maskPath := filepath.Join(t.TempDir(), "mask.png")
+	require.NoError(t, WriteSemanticSizedEditMaskWithGuard(
+		maskPath,
+		layout,
+		[]image.Point{image.Pt(128, 128), image.Pt(128, 128), image.Pt(128, 128)},
+		0,
+	))
+	dimensions, err := PNGDimensions(maskPath)
+	require.NoError(t, err)
+	require.Equal(t, image.Pt(1024, 1024), dimensions)
+}
+
 func TestWriteSemanticBoardAtNativeScaleUsesOneReductionForAsymmetricOuterPose(t *testing.T) {
 	layout, err := SemanticAnimationLayout(3, 4)
 	require.NoError(t, err)

@@ -271,6 +271,34 @@ func WriteStaticSetPack(t *testing.T) string {
 	return dir
 }
 
+func WriteWaterCyclePack(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeStyleEvidence(t, dir)
+	objects := `[
+    {
+      "id":"water-cycle",
+      "kind":"static-set",
+      "family":"ground",
+      "renderMode":"opaque-tile",
+      "registration":"canvas",
+      "description":"One calm seamless water material in three subtle phases.",
+      "magicSources":[],
+      "parts":[
+        {"id":"phase-00","role":"First phase.","description":"Calm first phase.","size":{"width":64,"height":64},"deploy":{"pathTemplate":"terrain/water/phase-00.png"}},
+        {"id":"phase-01","role":"Second phase.","description":"Calm second phase.","size":{"width":64,"height":64},"deploy":{"pathTemplate":"terrain/water/phase-01.png"}},
+        {"id":"phase-02","role":"Third phase.","description":"Calm third phase.","size":{"width":64,"height":64},"deploy":{"pathTemplate":"terrain/water/phase-02.png"}}
+      ]
+    }
+  ]`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "sprites.json"),
+		[]byte(packJSON(objects)),
+		0o644,
+	))
+	return dir
+}
+
 func LoadTargets(t *testing.T, dir string) (*pack.Pack, []targets.Target) {
 	t.Helper()
 	p, err := pack.Load(dir)

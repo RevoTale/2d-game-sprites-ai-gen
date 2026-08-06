@@ -127,6 +127,16 @@ func WriteNearestNeighborContactSheet(paths []string, out string, scale int) err
 // WriteTiledRepeatPreview exposes opposite-edge and repeated-motif defects by
 // repeating the exact native tile without interpolation or seam repair.
 func WriteTiledRepeatPreview(path, out string, columns, rows int) error {
+	return writeRepeatPreview(path, out, columns, rows, false)
+}
+
+// WriteMirroredRepeatPreview shows the exact deterministic addressing used for
+// material swatches whose geometry consumer owns boundary continuity.
+func WriteMirroredRepeatPreview(path, out string, columns, rows int) error {
+	return writeRepeatPreview(path, out, columns, rows, true)
+}
+
+func writeRepeatPreview(path, out string, columns, rows int, mirrored bool) error {
 	if columns < 1 || rows < 1 {
 		return fmt.Errorf("tiled repeat preview dimensions must be positive")
 	}
@@ -149,7 +159,22 @@ func WriteTiledRepeatPreview(path, out string, columns, rows int) error {
 				(column+1)*bounds.Dx(),
 				(row+1)*bounds.Dy(),
 			)
-			draw.Draw(destination, target, source, bounds.Min, draw.Src)
+			if !mirrored || (row%2 == 0 && column%2 == 0) {
+				draw.Draw(destination, target, source, bounds.Min, draw.Src)
+				continue
+			}
+			for y := range bounds.Dy() {
+				for x := range bounds.Dx() {
+					sourceX, sourceY := x, y
+					if column%2 != 0 {
+						sourceX = bounds.Dx() - 1 - sourceX
+					}
+					if row%2 != 0 {
+						sourceY = bounds.Dy() - 1 - sourceY
+					}
+					destination.Set(target.Min.X+x, target.Min.Y+y, source.At(bounds.Min.X+sourceX, bounds.Min.Y+sourceY))
+				}
+			}
 		}
 	}
 	return writePNG(out, destination)

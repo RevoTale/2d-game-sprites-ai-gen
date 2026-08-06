@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
+	"math"
 	"os"
 )
 
 // StaticSetScaleCalibrationVersion identifies the deterministic shared-scale
 // transform used for coupled static-set parts.
-const StaticSetScaleCalibrationVersion = 1
+const StaticSetScaleCalibrationVersion = 2
 
 // StaticSetPart declares one recovered static-set crop and its production
 // canvas. Every part in one call receives the same scale.
@@ -98,6 +99,148 @@ func WriteSharedScaleTransparentStaticSet(
 		return StaticSetScaleCalibration{}, err
 	}
 	return calibration, nil
+}
+
+// WriteCanvasRegisteredTransparentStaticSet preserves each provider cell as a
+// complete transparent canvas. It is for composable overlays whose pixel
+// coordinates carry meaning; alpha-bounds fitting would destroy their joins.
+func WriteCanvasRegisteredTransparentStaticSet(
+	boardPath string,
+	layout SemanticLayout,
+	providerSizes []image.Point,
+	parts []StaticSetPart,
+	locked []PaletteColor,
+) (StaticSetScaleCalibration, error) {
+	if len(parts) == 0 || len(parts) != len(providerSizes) {
+		return StaticSetScaleCalibration{}, fmt.Errorf(
+			"canvas static set requires one provider size per part",
+		)
+	}
+	if len(locked) == 0 {
+		return StaticSetScaleCalibration{}, fmt.Errorf("canvas static set requires a shared locked palette")
+	}
+	board, err := decodeNRGBA(boardPath)
+	if err != nil {
+		return StaticSetScaleCalibration{}, fmt.Errorf("decode canvas static set board: %w", err)
+	}
+	if board.Bounds() != image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight) {
+		return StaticSetScaleCalibration{}, fmt.Errorf("canvas static set board dimensions do not match its layout")
+	}
+	bounds, err := semanticSizedBounds(layout, providerSizes, 0)
+	if err != nil {
+		return StaticSetScaleCalibration{}, err
+	}
+	calibration := StaticSetScaleCalibration{Version: StaticSetScaleCalibrationVersion}
+	for index, part := range parts {
+		if part.Size.X <= 0 || part.Size.Y <= 0 {
+			return StaticSetScaleCalibration{}, fmt.Errorf("canvas static set part %q has invalid size", part.ID)
+		}
+		if index == 0 {
+			calibration.Numerator = part.Size.X
+			calibration.Denominator = bounds[index].Dx()
+			calibration.Scale = float64(calibration.Numerator) / float64(calibration.Denominator)
+		}
+		xScale := float64(part.Size.X) / float64(bounds[index].Dx())
+		yScale := float64(part.Size.Y) / float64(bounds[index].Dy())
+		if math.Abs(xScale-calibration.Scale) > 1e-9 || math.Abs(yScale-calibration.Scale) > 1e-9 {
+			return StaticSetScaleCalibration{}, fmt.Errorf(
+				"canvas static set part %q does not share scale %.6f",
+				part.ID,
+				calibration.Scale,
+			)
+		}
+	}
+	temporaryPaths := make([]string, 0, len(parts))
+	for index, part := range parts {
+		temporaryPath := part.OutputPath + ".canvas-set.tmp"
+		normalized := image.NewNRGBA(image.Rectangle{Max: part.Size})
+		areaScale(normalized, normalized.Bounds(), board, bounds[index])
+		normalized = applyPalette(normalized, locked)
+		if err := writePNG(temporaryPath, normalized); err != nil {
+			removeStaticSetTemporaryPaths(temporaryPaths)
+			_ = os.Remove(temporaryPath)
+			return StaticSetScaleCalibration{}, fmt.Errorf("write canvas static set part %q: %w", part.ID, err)
+		}
+		temporaryPaths = append(temporaryPaths, temporaryPath)
+	}
+	for index, part := range parts {
+		if err := os.Rename(temporaryPaths[index], part.OutputPath); err != nil {
+			removeStaticSetTemporaryPaths(temporaryPaths[index:])
+			return StaticSetScaleCalibration{}, fmt.Errorf("publish canvas static set part %q: %w", part.ID, err)
+		}
+	}
+	return calibration, nil
+}
+
+// WriteFullBleedOpaqueStaticSet converts each recovered material rectangle
+// into its complete production tile. Provider placement inside the shared
+// board is irrelevant, while every output pixel belongs to the material.
+func WriteFullBleedOpaqueStaticSet(
+	parts []StaticSetPart,
+	locked []PaletteColor,
+) (StaticSetScaleCalibration, error) {
+	if len(parts) == 0 {
+		return StaticSetScaleCalibration{}, fmt.Errorf("opaque static set requires at least one part")
+	}
+	if len(locked) == 0 {
+		return StaticSetScaleCalibration{}, fmt.Errorf("opaque static set requires a shared locked palette")
+	}
+	temporaryPaths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		measured, err := measureStaticSetPart(part)
+		if err != nil {
+			removeStaticSetTemporaryPaths(temporaryPaths)
+			return StaticSetScaleCalibration{}, err
+		}
+		materialBounds, err := fullyOpaqueInset(measured.foreground, measured.bounds)
+		if err != nil {
+			removeStaticSetTemporaryPaths(temporaryPaths)
+			return StaticSetScaleCalibration{}, fmt.Errorf("opaque static set part %q: %w", part.ID, err)
+		}
+		temporaryPath := part.OutputPath + ".opaque-set.tmp"
+		normalized := image.NewNRGBA(image.Rectangle{Max: part.Size})
+		areaScale(normalized, normalized.Bounds(), measured.foreground, materialBounds)
+		normalized = applyPalette(normalized, locked)
+		if err := writePNG(temporaryPath, normalized); err != nil {
+			removeStaticSetTemporaryPaths(temporaryPaths)
+			_ = os.Remove(temporaryPath)
+			return StaticSetScaleCalibration{}, fmt.Errorf("write opaque static set part %q: %w", part.ID, err)
+		}
+		temporaryPaths = append(temporaryPaths, temporaryPath)
+	}
+	for index, part := range parts {
+		if err := os.Rename(temporaryPaths[index], part.OutputPath); err != nil {
+			removeStaticSetTemporaryPaths(temporaryPaths[index:])
+			return StaticSetScaleCalibration{}, fmt.Errorf("publish opaque static set part %q: %w", part.ID, err)
+		}
+	}
+	return StaticSetScaleCalibration{
+		Version:     StaticSetScaleCalibrationVersion,
+		Scale:       1,
+		Numerator:   1,
+		Denominator: 1,
+	}, nil
+}
+
+func fullyOpaqueInset(source *image.NRGBA, bounds image.Rectangle) (image.Rectangle, error) {
+	for inset := 0; ; inset++ {
+		candidate := bounds.Inset(inset)
+		if candidate.Empty() {
+			return image.Rectangle{}, fmt.Errorf("has no fully opaque interior")
+		}
+		opaque := true
+		for y := candidate.Min.Y; y < candidate.Max.Y && opaque; y++ {
+			for x := candidate.Min.X; x < candidate.Max.X; x++ {
+				if source.NRGBAAt(x, y).A < 128 {
+					opaque = false
+					break
+				}
+			}
+		}
+		if opaque {
+			return candidate, nil
+		}
+	}
 }
 
 func measureStaticSetPart(part StaticSetPart) (measuredStaticSetPart, error) {

@@ -410,6 +410,36 @@ func TestWriteSharedScaleTransparentStaticSetUsesOneLimitingScale(t *testing.T) 
 	require.Equal(t, 155, compactBounds.Max.Y)
 }
 
+func TestWriteFullBleedOpaqueStaticSetCropsTransparentSwatchCorners(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.png")
+	source := image.NewNRGBA(image.Rect(0, 0, 100, 100))
+	for y := 10; y < 90; y++ {
+		for x := 10; x < 90; x++ {
+			if x+y < 25 || x+(99-y) < 25 || (99-x)+y < 25 || (99-x)+(99-y) < 25 {
+				continue
+			}
+			source.SetNRGBA(x, y, color.NRGBA{R: 70, G: 80, B: 90, A: 255})
+		}
+	}
+	writePNG(t, sourcePath, source)
+	outputPath := filepath.Join(dir, "output.png")
+
+	calibration, err := imageio.WriteFullBleedOpaqueStaticSet(
+		[]imageio.StaticSetPart{{
+			ID: "material", SourcePath: sourcePath, OutputPath: outputPath,
+			Size: image.Pt(64, 64), Registration: imageio.SubjectRegistrationCentered,
+		}},
+		[]imageio.PaletteColor{{R: 70, G: 80, B: 90}},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, imageio.StaticSetScaleCalibrationVersion, calibration.Version)
+	output := readPNG(t, outputPath)
+	require.Equal(t, image.Rect(0, 0, 64, 64), output.Bounds())
+	require.Equal(t, output.Bounds(), opaqueBounds(output))
+}
+
 func TestWriteSharedScaleTransparentStaticSetCanBeHeightLimited(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "tall.png")

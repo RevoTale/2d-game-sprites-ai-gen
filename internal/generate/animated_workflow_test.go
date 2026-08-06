@@ -812,6 +812,77 @@ func TestStaticSetGenerationUsesOneSharedProviderAttempt(t *testing.T) {
 	}
 }
 
+func TestOpaqueTileStaticSetGeneratesSeamAndLoopReviewArtifacts(t *testing.T) {
+	dir := testkit.WriteWaterCyclePack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	gen := &testkit.StaticSetProvider{}
+	outputDir := filepath.Join(dir, p.OutputDir)
+
+	_, err := generate.Run(context.Background(), all, gen, generate.Options{
+		OutputDir: outputDir,
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "water-cycle"},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, gen.Requests, 1)
+	require.Equal(t, image.Pt(1024, 1024), gen.Requests[0].Size)
+	require.Contains(t, gen.Requests[0].Prompt, "fill its complete declared tile rectangle")
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	set := manifest.Intermediates["static-set:water-cycle"]
+	require.Equal(t, generate.StatusAwaitingReview, set.Status)
+	require.Equal(t, 320, set.SemanticLayout.AnchorSpacing)
+	require.FileExists(t, filepath.Join(outputDir, "runs", "run", "static-sets", "water-cycle", "review", "loop.gif"))
+	for _, partID := range []string{"phase-00", "phase-01", "phase-02"} {
+		require.FileExists(t, filepath.Join(
+			outputDir,
+			"runs",
+			"run",
+			"static-sets",
+			"water-cycle",
+			"review",
+			"repeats",
+			partID+"-3x3.png",
+		))
+	}
+	for _, target := range all {
+		state := manifest.Targets[target.ID]
+		require.Equal(t, "full-bleed-opaque-static-set-v1", state.Normalization.ScaleAlgorithm)
+		assertBoardIsFullyOpaque(t, state.NormalizedPath)
+	}
+}
+
+func TestMaterialSwatchStaticSetUsesFullBleedMirroredRepeatContract(t *testing.T) {
+	dir := testkit.WriteWaterCyclePack(t)
+	p, all := testkit.LoadTargets(t, dir)
+	for index := range all {
+		all[index].RenderMode = pack.RenderModeMaterialSwatch
+	}
+	gen := &testkit.StaticSetProvider{}
+	outputDir := filepath.Join(dir, p.OutputDir)
+
+	_, err := generate.Run(context.Background(), all, gen, generate.Options{
+		OutputDir: outputDir,
+		DeployDir: filepath.Join(dir, p.DeployDir),
+		RunID:     "run",
+		Filter:    targets.Filter{Object: "water-cycle"},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, gen.Requests, 1)
+	require.Contains(t, gen.Requests[0].Prompt, "full-bleed opaque material swatches")
+	require.NotContains(t, gen.Requests[0].Prompt, "tile seamlessly")
+	manifest, err := generate.Load(outputDir, "run")
+	require.NoError(t, err)
+	for _, target := range all {
+		state := manifest.Targets[target.ID]
+		require.Equal(t, "full-bleed-material-swatch-v1", state.Normalization.ScaleAlgorithm)
+		assertBoardIsFullyOpaque(t, state.NormalizedPath)
+	}
+}
+
 func TestStaticSetNormalizationVersionReprocessesWithoutProviderCall(t *testing.T) {
 	dir := testkit.WriteStaticSetPack(t)
 	p, all := testkit.LoadTargets(t, dir)

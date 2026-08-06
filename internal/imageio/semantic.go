@@ -52,8 +52,22 @@ func SemanticMasterLayout(directions int) (SemanticLayout, error) {
 // sizes. Every target receives enough room at native 2x scale plus a real
 // chroma corridor; no per-part rescaling is required after extraction.
 func SemanticStaticSetLayout(sizes []image.Point) (SemanticLayout, error) {
+	columns := int(math.Ceil(math.Sqrt(float64(len(sizes)))))
+	return SemanticStaticSetLayoutWithColumns(sizes, columns)
+}
+
+// SemanticStaticSetLayoutWithColumns uses an explicit provider-only grid.
+// Coupled sets with a meaningful exact factorization can avoid empty trailing
+// cells that a generative model may incorrectly fill with extra artwork.
+func SemanticStaticSetLayoutWithColumns(sizes []image.Point, columns int) (SemanticLayout, error) {
 	if len(sizes) == 0 {
 		return SemanticLayout{}, fmt.Errorf("semantic static set requires at least one size")
+	}
+	if columns < 1 || columns > len(sizes) {
+		return SemanticLayout{}, fmt.Errorf(
+			"semantic static set columns must be between 1 and %d",
+			len(sizes),
+		)
 	}
 	maximumWidth, maximumHeight := 0, 0
 	for _, size := range sizes {
@@ -63,18 +77,19 @@ func SemanticStaticSetLayout(sizes []image.Point) (SemanticLayout, error) {
 		maximumWidth = max(maximumWidth, size.X)
 		maximumHeight = max(maximumHeight, size.Y)
 	}
-	columns := int(math.Ceil(math.Sqrt(float64(len(sizes)))))
 	rows := (len(sizes) + columns - 1) / columns
 	spacing := roundUp(max(maximumWidth, maximumHeight)+64, 16)
-	width := roundUp(2*semanticOuterReserve+maximumWidth+(columns-1)*spacing, 16)
-	height := roundUp(2*semanticOuterReserve+maximumHeight+(rows-1)*spacing, 16)
+	gridWidth := maximumWidth + (columns-1)*spacing
+	gridHeight := maximumHeight + (rows-1)*spacing
+	width := max(semanticMinimumCanvas, roundUp(2*semanticOuterReserve+gridWidth, 16))
+	height := max(semanticMinimumCanvas, roundUp(2*semanticOuterReserve+gridHeight, 16))
 	layout := SemanticLayout{
 		CanvasWidth: width, CanvasHeight: height,
 		Columns: columns, Rows: rows, AnchorSpacing: spacing,
 		Anchors: make([]image.Point, len(sizes)),
 	}
-	left := semanticOuterReserve + maximumWidth/2
-	top := semanticOuterReserve + maximumHeight
+	left := (width-gridWidth)/2 + maximumWidth/2
+	top := (height-gridHeight)/2 + maximumHeight
 	for index := range layout.Anchors {
 		layout.Anchors[index] = image.Pt(
 			left+(index%columns)*spacing,
@@ -112,6 +127,18 @@ func WriteSemanticSizedEditMask(
 	layout SemanticLayout,
 	sizes []image.Point,
 ) error {
+	return WriteSemanticSizedEditMaskWithGuard(outputPath, layout, sizes, -1)
+}
+
+// WriteSemanticSizedEditMaskWithGuard exposes each target rectangle with an
+// explicit inset. A negative value selects the ordinary per-part guard; zero
+// is reserved for opaque tiles whose opposite edges must remain editable.
+func WriteSemanticSizedEditMaskWithGuard(
+	outputPath string,
+	layout SemanticLayout,
+	sizes []image.Point,
+	guardOverride int,
+) error {
 	if len(sizes) != len(layout.Anchors) {
 		return fmt.Errorf("semantic sized mask requires one size per anchor")
 	}
@@ -120,7 +147,10 @@ func WriteSemanticSizedEditMask(
 	draw.Draw(mask, canvas, image.NewUniform(color.NRGBA{R: 255, G: 255, B: 255, A: 255}), image.Point{}, draw.Src)
 	regions := make([]image.Rectangle, len(sizes))
 	for index, size := range sizes {
-		guard := max(1, min(size.X, size.Y)/32)
+		guard := guardOverride
+		if guard < 0 {
+			guard = max(1, min(size.X, size.Y)/32)
+		}
 		bounds, boundsErr := semanticSizedBounds(
 			layout,
 			[]image.Point{size},
