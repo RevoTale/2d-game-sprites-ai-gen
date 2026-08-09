@@ -860,7 +860,7 @@ func TestMaterialSwatchStaticSetUsesFullBleedMirroredRepeatContract(t *testing.T
 	for index := range all {
 		all[index].RenderMode = pack.RenderModeMaterialSwatch
 	}
-	gen := &testkit.StaticSetProvider{}
+	gen := &testkit.StaticSetProvider{FillCanvas: true}
 	outputDir := filepath.Join(dir, p.OutputDir)
 
 	_, err := generate.Run(context.Background(), all, gen, generate.Options{
@@ -873,6 +873,8 @@ func TestMaterialSwatchStaticSetUsesFullBleedMirroredRepeatContract(t *testing.T
 	require.NoError(t, err)
 	require.Len(t, gen.Requests, 1)
 	require.Contains(t, gen.Requests[0].Prompt, "full-bleed opaque material swatches")
+	require.Contains(t, gen.Requests[0].Prompt, "exactly 3 separate editable rectangles")
+	require.Contains(t, gen.Requests[0].Prompt, "never filling the complete provider canvas")
 	require.NotContains(t, gen.Requests[0].Prompt, "tile seamlessly")
 	manifest, err := generate.Load(outputDir, "run")
 	require.NoError(t, err)

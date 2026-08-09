@@ -20,8 +20,9 @@ import (
 )
 
 type StaticSetProvider struct {
-	Requests  []provider.Request
-	PartCount int
+	Requests   []provider.Request
+	PartCount  int
+	FillCanvas bool
 }
 
 func (p *StaticSetProvider) Capabilities() provider.Capabilities {
@@ -33,6 +34,24 @@ func (p *StaticSetProvider) Generate(
 	request provider.Request,
 ) (provider.Result, error) {
 	p.Requests = append(p.Requests, request)
+	if p.FillCanvas {
+		img := image.NewNRGBA(image.Rect(0, 0, request.Size.X, request.Size.Y))
+		for y := 0; y < request.Size.Y; y++ {
+			for x := 0; x < request.Size.X; x++ {
+				img.SetNRGBA(x, y, color.NRGBA{
+					R: uint8(70 + (x/32+y/32)%4),
+					G: 60,
+					B: 50,
+					A: 255,
+				})
+			}
+		}
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, img); err != nil {
+			return provider.Result{}, err
+		}
+		return provider.Result{PNG: encoded.Bytes()}, nil
+	}
 	count := p.PartCount
 	if count == 0 {
 		data, err := os.ReadFile(request.Inputs[0].Path)

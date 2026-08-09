@@ -29,6 +29,7 @@ func generateBoardCandidate(
 	dir, prompt string,
 	inputs, reviewOnly []conditioning.Input,
 	maskPath string,
+	ownershipMaskPath string,
 	kind string,
 	canvas image.Point,
 ) error {
@@ -92,7 +93,13 @@ func generateBoardCandidate(
 			return err
 		}
 		normalizedPath := filepath.Join(candidateDir, "normalized.png")
-		evaluation, err := evaluateBoardCandidate(state, rawPath, normalizedPath, canvas)
+		evaluation, err := evaluateBoardCandidate(
+			state,
+			rawPath,
+			normalizedPath,
+			ownershipMaskPath,
+			canvas,
+		)
 		if err != nil {
 			return err
 		}
@@ -112,7 +119,13 @@ func generateBoardCandidate(
 	}
 	candidate := &attempt.Candidates[0]
 	if candidate.QualityVersion < candidateQualityVersion {
-		evaluation, err := evaluateBoardCandidate(state, candidate.RawPath, candidate.NormalizedPath, canvas)
+		evaluation, err := evaluateBoardCandidate(
+			state,
+			candidate.RawPath,
+			candidate.NormalizedPath,
+			ownershipMaskPath,
+			canvas,
+		)
 		if err != nil {
 			return err
 		}
@@ -220,13 +233,25 @@ func generateBoardCandidate(
 func evaluateBoardCandidate(
 	state *IntermediateState,
 	rawPath, normalizedPath string,
+	ownershipMaskPath string,
 	canvas image.Point,
 ) (imageio.BoardEvaluation, error) {
 	raw, err := os.ReadFile(rawPath)
 	if err != nil {
 		return imageio.BoardEvaluation{}, err
 	}
-	if err := imageio.WriteTransparentBoard(normalizedPath, raw, canvas.X, canvas.Y); err != nil {
+	if ownershipMaskPath != "" {
+		err = imageio.WriteEditableMaskedBoard(
+			normalizedPath,
+			raw,
+			ownershipMaskPath,
+			canvas.X,
+			canvas.Y,
+		)
+	} else {
+		err = imageio.WriteTransparentBoard(normalizedPath, raw, canvas.X, canvas.Y)
+	}
+	if err != nil {
 		return imageio.BoardEvaluation{}, err
 	}
 	if state.SemanticLayout == nil {

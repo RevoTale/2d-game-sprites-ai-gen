@@ -22,6 +22,9 @@ safe production canvas. This preserves common material scale while allowing
 transparent reserve; independent part fitting is forbidden. Board geometry,
 exact `2x` canvases, normalization, and QA stay in code; JSON contains only
 material, semantic role, logical size, and deploy facts.
+Canvas-registered transparent overlays additionally keep a CLI-owned protected
+provider guard and must retain a fully transparent two-pixel production
+perimeter, so drafts cannot pass generator QA and then fail map composition.
 
 Isolated statics retain their independent alpha-bounds fit. Animated units use
 their separate canonical master/profile and direction-owned scale/anchor flow;

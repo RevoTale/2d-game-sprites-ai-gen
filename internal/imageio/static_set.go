@@ -8,6 +8,8 @@ import (
 	"os"
 )
 
+const canvasStaticSetTransparentPerimeter = 2
+
 // StaticSetScaleCalibrationVersion identifies the deterministic shared-scale
 // transform used for coupled static-set parts.
 const StaticSetScaleCalibrationVersion = 2
@@ -156,6 +158,13 @@ func WriteCanvasRegisteredTransparentStaticSet(
 		normalized := image.NewNRGBA(image.Rectangle{Max: part.Size})
 		areaScale(normalized, normalized.Bounds(), board, bounds[index])
 		normalized = applyPalette(normalized, locked)
+		if !hasTransparentPerimeter(normalized, canvasStaticSetTransparentPerimeter) {
+			removeStaticSetTemporaryPaths(temporaryPaths)
+			return StaticSetScaleCalibration{}, fmt.Errorf(
+				"canvas static set part %q requires a transparent perimeter",
+				part.ID,
+			)
+		}
 		if err := writePNG(temporaryPath, normalized); err != nil {
 			removeStaticSetTemporaryPaths(temporaryPaths)
 			_ = os.Remove(temporaryPath)
@@ -170,6 +179,28 @@ func WriteCanvasRegisteredTransparentStaticSet(
 		}
 	}
 	return calibration, nil
+}
+
+func hasTransparentPerimeter(source *image.NRGBA, width int) bool {
+	if width <= 0 || source.Bounds().Dx() <= width*2 || source.Bounds().Dy() <= width*2 {
+		return false
+	}
+	bounds := source.Bounds()
+	for inset := 0; inset < width; inset++ {
+		top, bottom := bounds.Min.Y+inset, bounds.Max.Y-1-inset
+		left, right := bounds.Min.X+inset, bounds.Max.X-1-inset
+		for x := left; x <= right; x++ {
+			if source.NRGBAAt(x, top).A != 0 || source.NRGBAAt(x, bottom).A != 0 {
+				return false
+			}
+		}
+		for y := top; y <= bottom; y++ {
+			if source.NRGBAAt(left, y).A != 0 || source.NRGBAAt(right, y).A != 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // WriteFullBleedOpaqueStaticSet converts each recovered material rectangle

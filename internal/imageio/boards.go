@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"os"
 )
@@ -61,6 +62,58 @@ func WriteTransparentBoard(path string, data []byte, width, height int) error {
 		)
 	}
 	return writePNG(path, removeEdgeBackground(decoded))
+}
+
+// WriteEditableMaskedBoard treats a CLI-owned edit mask as the exact ownership
+// boundary for full-bleed material parts. Provider masks are advisory, so raw
+// pixels outside transparent mask regions must never merge neighboring parts.
+func WriteEditableMaskedBoard(
+	path string,
+	data []byte,
+	maskPath string,
+	width, height int,
+) error {
+	decoded, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("decode generated board: %w", err)
+	}
+	expected := image.Rect(0, 0, width, height)
+	if decoded.Bounds() != expected {
+		return fmt.Errorf(
+			"generated board is %dx%d, expected %dx%d",
+			decoded.Bounds().Dx(),
+			decoded.Bounds().Dy(),
+			width,
+			height,
+		)
+	}
+	mask, err := decodeNRGBA(maskPath)
+	if err != nil {
+		return fmt.Errorf("decode editable ownership mask: %w", err)
+	}
+	if mask.Bounds() != expected {
+		return fmt.Errorf(
+			"editable ownership mask is %dx%d, expected %dx%d",
+			mask.Bounds().Dx(),
+			mask.Bounds().Dy(),
+			width,
+			height,
+		)
+	}
+	result := image.NewNRGBA(expected)
+	for y := expected.Min.Y; y < expected.Max.Y; y++ {
+		for x := expected.Min.X; x < expected.Max.X; x++ {
+			if mask.NRGBAAt(x, y).A != 0 {
+				continue
+			}
+			result.SetNRGBA(
+				x,
+				y,
+				color.NRGBAModel.Convert(decoded.At(x, y)).(color.NRGBA),
+			)
+		}
+	}
+	return writePNG(path, result)
 }
 
 // CanonicalFrameEdgePadding is the transparent final-frame gutter preserved

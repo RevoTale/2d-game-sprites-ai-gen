@@ -24,7 +24,7 @@ import (
 
 const (
 	ManifestVersion                    = 12
-	candidateQualityVersion            = 21
+	candidateQualityVersion            = 22
 	AnimatedAssemblyVersion            = 8
 	opaqueTileHardMeanEdgeDelta        = 0.08
 	opaqueTileHardMaximumEdgeDelta     = 0.55

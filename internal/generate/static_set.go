@@ -19,6 +19,7 @@ const (
 	staticSetMarkerInset           = 32
 	staticSetMinimumProviderExtent = 256
 	staticSetScaleAlgorithm        = "shared-static-set-alpha-fit-v1"
+	staticSetOverlayProviderGuard  = 8
 )
 
 func generateStaticSet(
@@ -43,8 +44,8 @@ func generateStaticSet(
 		markerInset = 0
 		maskGuard = 0
 	} else if transparentOverlay {
-		markerInset = 0
-		maskGuard = 0
+		markerInset = staticSetOverlayProviderGuard
+		maskGuard = staticSetOverlayProviderGuard
 	} else {
 		for _, size := range layoutSizes {
 			markerInset = min(markerInset, min(size.X, size.Y)/4)
@@ -110,6 +111,10 @@ func generateStaticSet(
 		conditioning.RoleStyle,
 		conditioning.RoleIdentity,
 	)...)
+	ownershipMaskPath := ""
+	if opaqueTiles || materialSwatches {
+		ownershipMaskPath = maskPath
+	}
 	if err := generateBoardCandidate(
 		ctx,
 		gen,
@@ -121,6 +126,7 @@ func generateStaticSet(
 		inputs,
 		nil,
 		maskPath,
+		ownershipMaskPath,
 		pack.KindStaticSet,
 		state.SemanticLayout.Canvas(),
 	); err != nil {
@@ -413,7 +419,8 @@ func staticSetPrompt(shared targets.Target, group []targets.Target) string {
 		builder.WriteString("Return one coherent ordered set of canvas-registered transparent overlay sprites on one removable flat chroma background. ")
 		fmt.Fprintf(&builder, "The layout contains exactly %d editable parts and no trailing cells; return exactly %d parts and never add another part anywhere on the canvas. ", len(group), len(group))
 		builder.WriteString("Input 01 contains neutral placement rectangles only; the marker color is not artwork and must not survive in the result. ")
-		builder.WriteString("Replace each rectangle with its described transparent overlay while preserving canvas registration and transparent reserve. ")
+		builder.WriteString("Replace each rectangle with its described transparent overlay while preserving canvas registration. ")
+		builder.WriteString("Keep one uninterrupted chroma perimeter around all four edges of every part; foreground must never touch a part edge. ")
 		builder.WriteString("Keep one shared material scale, projection, lighting, and palette across every part. Do not draw labels, guides, borders, scenery, or shadows.\n\n")
 	} else if shared.RenderMode == pack.RenderModeOpaqueTile {
 		builder.WriteString("Return one coherent ordered set of opaque seamless material tiles on one removable flat chroma background. ")
@@ -424,8 +431,11 @@ func staticSetPrompt(shared targets.Target, group []targets.Target) string {
 		builder.WriteString("Do not draw labels, guides, borders, scenery, or shadows.\n\n")
 	} else if shared.RenderMode == pack.RenderModeMaterialSwatch {
 		builder.WriteString("Return one coherent ordered set of full-bleed opaque material swatches on one removable flat chroma background. ")
+		fmt.Fprintf(&builder, "The layout contains exactly %d separate editable rectangles; return exactly %d swatches. ", len(group), len(group))
+		builder.WriteString("Full-bleed means filling each editable rectangle, never filling the complete provider canvas. ")
 		builder.WriteString("At every ordered anchor, replace the complete neutral rectangle with the requested flat material sample. ")
 		builder.WriteString("Fill every swatch completely; its outer silhouette is only a source crop and must not depict a shoreline, bank, corner, border, frame, or map composition. ")
+		builder.WriteString("Keep every non-editable corridor and all outer canvas reserve as one unchanged flat chroma background. ")
 		builder.WriteString("Preserve one shared palette, material scale, projection, and lighting. Do not draw labels, guides, scenery, or shadows.\n\n")
 	} else {
 		builder.WriteString("Return one coherent set of isolated sprites on one removable flat chroma background. ")
