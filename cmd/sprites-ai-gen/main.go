@@ -194,6 +194,11 @@ func writeStarterStyleInput(packDir string) error {
 func runGenerate(ctx context.Context, args []string) error {
 	fs, common := commonFlags("generate")
 	allObjects := fs.Bool("all", false, "generate every object after reporting the exact provider-call count")
+	reprocessOnly := fs.Bool(
+		"reprocess-only",
+		false,
+		"rebuild artifacts from an existing raw candidate without allowing provider calls",
+	)
 	var excluded stringListFlag
 	fs.Var(&excluded, "exclude-object", "object id to exclude from --all; repeatable")
 	if err := fs.Parse(args); err != nil {
@@ -218,6 +223,14 @@ func runGenerate(ctx context.Context, args []string) error {
 	}
 	if !common.styleGuide && !*allObjects && common.object == "" {
 		return errors.New("paid generation requires --object <id> or explicit --all")
+	}
+	if *reprocessOnly {
+		if common.runID == "" || common.runID == "auto" {
+			return errors.New("--reprocess-only requires an existing concrete --run id")
+		}
+		if _, loadErr := generate.Load(filepath.Join(common.packDir, pack.OutputDir(p)), common.runID); loadErr != nil {
+			return fmt.Errorf("load --reprocess-only run: %w", loadErr)
+		}
 	}
 	filter := common.filter()
 	if *allObjects {
@@ -256,13 +269,18 @@ func runGenerate(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	env, err := generateEnvironment(common.packDir)
-	if err != nil {
-		return err
-	}
-	gen, err := productionProvider(env)
-	if err != nil {
-		return err
+	var gen provider.Provider
+	if *reprocessOnly {
+		gen = reprocessOnlyProvider{}
+	} else {
+		env, envErr := generateEnvironment(common.packDir)
+		if envErr != nil {
+			return envErr
+		}
+		gen, err = productionProvider(env)
+		if err != nil {
+			return err
+		}
 	}
 	all = resolveReferencePaths(all, common.packDir)
 	if err := output.Validate(filepath.Join(common.packDir, out)); err != nil {
@@ -307,6 +325,18 @@ func runGenerate(ctx context.Context, args []string) error {
 		return err
 	}
 	return statusreport.Print(os.Stdout, manifest, all, filter)
+}
+
+type reprocessOnlyProvider struct{}
+
+func (reprocessOnlyProvider) Capabilities() provider.Capabilities {
+	return provider.Capabilities{References: true, Masks: true}
+}
+
+func (reprocessOnlyProvider) Generate(context.Context, provider.Request) (provider.Result, error) {
+	return provider.Result{}, errors.New(
+		"--reprocess-only cannot call OpenAI; the selected run has no reusable raw candidate",
+	)
 }
 
 func pathSHA256(path string) (string, error) {

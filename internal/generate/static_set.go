@@ -18,7 +18,7 @@ import (
 const (
 	staticSetMarkerInset           = 32
 	staticSetMinimumProviderExtent = 256
-	staticSetScaleAlgorithm        = "shared-static-set-alpha-fit-v1"
+	staticSetScaleAlgorithm        = "canvas-class-static-set-alpha-fit-v1"
 	staticSetOverlayProviderGuard  = 8
 )
 
@@ -186,7 +186,7 @@ func generateStaticSet(
 			sharedPalette,
 		)
 	} else {
-		calibration, err = imageio.WriteSharedScaleTransparentStaticSet(
+		calibration, err = imageio.WriteCanvasClassScaleTransparentStaticSet(
 			partSpecs,
 			sharedPalette,
 		)
@@ -232,16 +232,23 @@ func generateStaticSet(
 		}
 	}
 	state.StaticSetScale = &calibration
-	if calibration.Scale < 1 && !transparentOverlay && !opaqueTiles && !materialSwatches {
-		state.Warnings = append(
-			state.Warnings,
-			fmt.Sprintf(
-				"shared static-set scale %.6f is limited by %s %s; inspect every part at native and logical size",
-				calibration.Scale,
-				calibration.LimitingPartID,
-				calibration.LimitingAxis,
-			),
-		)
+	if !transparentOverlay && !opaqueTiles && !materialSwatches {
+		for _, scaleGroup := range calibration.Groups {
+			if scaleGroup.Scale >= 1 {
+				continue
+			}
+			state.Warnings = append(
+				state.Warnings,
+				fmt.Sprintf(
+					"canvas class %dx%d scale %.6f is limited by %s %s; inspect its parts at native and logical size",
+					scaleGroup.CanvasClass.X,
+					scaleGroup.CanvasClass.Y,
+					scaleGroup.Scale,
+					scaleGroup.LimitingPartID,
+					scaleGroup.LimitingAxis,
+				),
+			)
+		}
 	}
 	nativePaths := make([]string, 0, len(group))
 	logicalPaths := make([]string, 0, len(group))
@@ -261,7 +268,7 @@ func generateStaticSet(
 			state,
 			partSpecs[index].OutputPath,
 			sharedPalette,
-			calibration.Scale,
+			calibration.ScaleForPart(target.ID),
 			scaleAlgorithm,
 		)
 		targetState := manifest.Targets[target.ID]

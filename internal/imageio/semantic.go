@@ -1,6 +1,7 @@
 package imageio
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -16,7 +17,11 @@ const (
 	semanticMinimumCanvas = 1024
 	semanticCanvasGuard   = 8
 	semanticOuterReserve  = 64
+	semanticNoiseMaxArea  = 128
+	semanticNoiseMaxSpan  = 16
 )
+
+var errAmbiguousSemanticOwnership = errors.New("ambiguous ownership")
 
 // SemanticLayout describes ordered pose anchors. Anchors establish semantic
 // order only; they are not clipping or validation boundaries.
@@ -625,6 +630,14 @@ func assignComponentsToAnchors(
 	for _, component := range detached {
 		owner, err := detachedSemanticComponentOwner(component, groups, layout)
 		if err != nil {
+			// Background recovery can leave a tiny anti-aliased island exactly
+			// between two anchors. It has no defensible owner and must not enlarge
+			// either production sprite. Keep rejecting larger ambiguous material,
+			// which may be a real detached subject or cross-cell contamination.
+			if errors.Is(err, errAmbiguousSemanticOwnership) &&
+				isIgnorableSemanticNoise(component) {
+				continue
+			}
 			return nil, err
 		}
 		groups[owner] = append(groups[owner], component)
@@ -684,7 +697,11 @@ func assignPrimaryComponentsByAnchor(
 			return fmt.Errorf("semantic component %v has no pose ownership", component.bounds)
 		}
 		if second >= 0 && math.Abs(secondDistance-bestDistance) <= 1e-9 {
-			return fmt.Errorf("semantic component %v has ambiguous ownership", component.bounds)
+			return fmt.Errorf(
+				"semantic component %v has %w",
+				component.bounds,
+				errAmbiguousSemanticOwnership,
+			)
 		}
 		groups[best] = append(groups[best], component)
 	}
@@ -709,11 +726,21 @@ func detachedSemanticComponentOwner(
 	}
 	if bestDistance <= float64(layout.AnchorSpacing)*0.75 {
 		if second >= 0 && math.Abs(secondDistance-bestDistance) <= 1e-9 {
-			return -1, fmt.Errorf("semantic component %v has ambiguous ownership", component.bounds)
+			return -1, fmt.Errorf(
+				"semantic component %v has %w",
+				component.bounds,
+				errAmbiguousSemanticOwnership,
+			)
 		}
 		return best, nil
 	}
 	return nearbySemanticGroupOwner(component, groups, layout.AnchorSpacing)
+}
+
+func isIgnorableSemanticNoise(component semanticComponent) bool {
+	return component.area <= semanticNoiseMaxArea &&
+		component.bounds.Dx() <= semanticNoiseMaxSpan &&
+		component.bounds.Dy() <= semanticNoiseMaxSpan
 }
 
 // nearbySemanticGroupOwner handles small detached material such as one loose

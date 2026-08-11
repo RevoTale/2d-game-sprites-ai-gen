@@ -794,8 +794,8 @@ func TestStaticSetGenerationUsesOneSharedProviderAttempt(t *testing.T) {
 		}, state.IntrinsicSize)
 		require.Equal(t, 2, state.SourceDensity)
 		require.NotNil(t, state.Normalization)
-		require.Equal(t, "shared-static-set-alpha-fit-v1", state.Normalization.ScaleAlgorithm)
-		require.Equal(t, set.StaticSetScale.Scale, state.Normalization.Scale)
+		require.Equal(t, "canvas-class-static-set-alpha-fit-v1", state.Normalization.ScaleAlgorithm)
+		require.Equal(t, set.StaticSetScale.ScaleForPart(target.ID), state.Normalization.Scale)
 		require.FileExists(t, state.Artifacts.BattlefieldPreviewPath)
 		overridePath := filepath.Join(set.Artifacts.RuntimeOverrideRoot, target.ID+".png")
 		require.FileExists(t, overridePath)
@@ -919,7 +919,7 @@ func TestStaticSetNormalizationVersionReprocessesWithoutProviderCall(t *testing.
 	for _, target := range all {
 		require.Equal(
 			t,
-			"shared-static-set-alpha-fit-v1",
+			"canvas-class-static-set-alpha-fit-v1",
 			reprocessed.Targets[target.ID].Normalization.ScaleAlgorithm,
 		)
 	}

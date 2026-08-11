@@ -150,6 +150,36 @@ func TestGenerateRequiresOpenAICredentialsWithoutInjectedProvider(t *testing.T) 
 	require.ErrorContains(t, err, "OPENAI_API_KEY")
 }
 
+func TestReprocessOnlyNeverSelectsProductionProvider(t *testing.T) {
+	dir := testkit.WritePack(t)
+	injectFakeProvider(t)
+	require.NoError(t, run(context.Background(), []string{
+		"generate", "--pack", dir, "--run", "run", "--object", "grass",
+	}))
+
+	called := false
+	productionProvider = func(map[string]string) (provider.Provider, error) {
+		called = true
+		return provider.Fake{}, nil
+	}
+	require.NoError(t, run(context.Background(), []string{
+		"generate", "--pack", dir, "--run", "run", "--object", "grass",
+		"--reprocess-only",
+	}))
+	require.False(t, called)
+}
+
+func TestReprocessOnlyRequiresExistingConcreteRun(t *testing.T) {
+	dir := testkit.WritePack(t)
+
+	err := run(context.Background(), []string{
+		"generate", "--pack", dir, "--run", "auto", "--object", "grass",
+		"--reprocess-only",
+	})
+
+	require.ErrorContains(t, err, "existing concrete --run id")
+}
+
 func TestE2EStyleGuideBootstrapIsOneReviewableAndDeployableTarget(t *testing.T) {
 	injectFakeProvider(t)
 	dir := testkit.WritePack(t)

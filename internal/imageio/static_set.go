@@ -6,16 +6,17 @@ import (
 	"image/draw"
 	"math"
 	"os"
+	"sort"
 )
 
 const canvasStaticSetTransparentPerimeter = 2
 
 // StaticSetScaleCalibrationVersion identifies the deterministic shared-scale
 // transform used for coupled static-set parts.
-const StaticSetScaleCalibrationVersion = 2
+const StaticSetScaleCalibrationVersion = 3
 
 // StaticSetPart declares one recovered static-set crop and its production
-// canvas. Every part in one call receives the same scale.
+// canvas. A normalizer decides which compatible parts share a scale.
 type StaticSetPart struct {
 	ID           string
 	SourcePath   string
@@ -24,15 +25,40 @@ type StaticSetPart struct {
 	Registration SubjectRegistrationMode
 }
 
-// StaticSetScaleCalibration records the one limiting transform selected for a
-// complete coupled set. An empty limiter means every source already fit at 1x.
+// StaticSetScaleCalibration records the most restrictive transform plus exact
+// per-canvas-class transforms. An empty limiter means every source fit at 1x.
 type StaticSetScaleCalibration struct {
-	Version        int     `json:"version"`
-	Scale          float64 `json:"scale"`
-	Numerator      int     `json:"numerator"`
-	Denominator    int     `json:"denominator"`
-	LimitingPartID string  `json:"limitingPartId,omitempty"`
-	LimitingAxis   string  `json:"limitingAxis,omitempty"`
+	Version        int                   `json:"version"`
+	Scale          float64               `json:"scale"`
+	Numerator      int                   `json:"numerator"`
+	Denominator    int                   `json:"denominator"`
+	LimitingPartID string                `json:"limitingPartId,omitempty"`
+	LimitingAxis   string                `json:"limitingAxis,omitempty"`
+	Groups         []StaticSetScaleGroup `json:"groups,omitempty"`
+}
+
+// StaticSetScaleGroup records the shared transform for one rotation-neutral
+// target-canvas class. Parts with different authored world sizes must not make
+// one another artificially small.
+type StaticSetScaleGroup struct {
+	CanvasClass    image.Point `json:"canvasClass"`
+	Scale          float64     `json:"scale"`
+	Numerator      int         `json:"numerator"`
+	Denominator    int         `json:"denominator"`
+	LimitingPartID string      `json:"limitingPartId,omitempty"`
+	LimitingAxis   string      `json:"limitingAxis,omitempty"`
+	PartIDs        []string    `json:"partIds"`
+}
+
+func (calibration StaticSetScaleCalibration) ScaleForPart(partID string) float64 {
+	for _, group := range calibration.Groups {
+		for _, candidate := range group.PartIDs {
+			if candidate == partID {
+				return group.Scale
+			}
+		}
+	}
+	return calibration.Scale
 }
 
 type measuredStaticSetPart struct {
@@ -99,6 +125,87 @@ func WriteSharedScaleTransparentStaticSet(
 	}
 	if err := writeMeasuredStaticSet(measured, locked); err != nil {
 		return StaticSetScaleCalibration{}, err
+	}
+	return calibration, nil
+}
+
+// WriteCanvasClassScaleTransparentStaticSet keeps a shared scale among parts
+// with the same authored canvas dimensions, treating rotated dimensions as the
+// same class. This preserves joinable segments while preventing a narrow root
+// or trim piece from shrinking large trees in a heterogeneous visual set.
+func WriteCanvasClassScaleTransparentStaticSet(
+	parts []StaticSetPart,
+	locked []PaletteColor,
+) (StaticSetScaleCalibration, error) {
+	if len(parts) == 0 {
+		return StaticSetScaleCalibration{}, fmt.Errorf("static set requires at least one part")
+	}
+	groups := make(map[image.Point][]StaticSetPart)
+	for _, part := range parts {
+		key := part.Size
+		if key.X > key.Y {
+			key.X, key.Y = key.Y, key.X
+		}
+		clone := part
+		clone.OutputPath += ".canvas-class.tmp"
+		groups[key] = append(groups[key], clone)
+	}
+	keys := make([]image.Point, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].X != keys[j].X {
+			return keys[i].X < keys[j].X
+		}
+		return keys[i].Y < keys[j].Y
+	})
+	calibration := StaticSetScaleCalibration{
+		Version:     StaticSetScaleCalibrationVersion,
+		Scale:       1,
+		Numerator:   1,
+		Denominator: 1,
+	}
+	temporaryPaths := make([]string, 0, len(parts))
+	for _, key := range keys {
+		classParts := groups[key]
+		classCalibration, err := WriteSharedScaleTransparentStaticSet(classParts, locked)
+		if err != nil {
+			removeStaticSetTemporaryPaths(temporaryPaths)
+			return StaticSetScaleCalibration{}, err
+		}
+		group := StaticSetScaleGroup{
+			CanvasClass: key,
+			Scale:       classCalibration.Scale, Numerator: classCalibration.Numerator,
+			Denominator:    classCalibration.Denominator,
+			LimitingPartID: classCalibration.LimitingPartID,
+			LimitingAxis:   classCalibration.LimitingAxis,
+			PartIDs:        make([]string, 0, len(classParts)),
+		}
+		for _, part := range classParts {
+			group.PartIDs = append(group.PartIDs, part.ID)
+			temporaryPaths = append(temporaryPaths, part.OutputPath)
+		}
+		sort.Strings(group.PartIDs)
+		calibration.Groups = append(calibration.Groups, group)
+		if group.Scale < calibration.Scale {
+			calibration.Scale = group.Scale
+			calibration.Numerator = group.Numerator
+			calibration.Denominator = group.Denominator
+			calibration.LimitingPartID = group.LimitingPartID
+			calibration.LimitingAxis = group.LimitingAxis
+		}
+	}
+	for _, part := range parts {
+		temporaryPath := part.OutputPath + ".canvas-class.tmp"
+		if err := os.Rename(temporaryPath, part.OutputPath); err != nil {
+			removeStaticSetTemporaryPaths(temporaryPaths)
+			return StaticSetScaleCalibration{}, fmt.Errorf(
+				"publish canvas-class static set part %q: %w",
+				part.ID,
+				err,
+			)
+		}
 	}
 	return calibration, nil
 }

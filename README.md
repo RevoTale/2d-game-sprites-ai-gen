@@ -29,6 +29,7 @@ go run ./cmd/sprites-ai-gen catalog --pack <pack> [--usage-root <maps>]
 go run ./cmd/sprites-ai-gen generate --pack <pack> --run auto --style-guide
 go run ./cmd/sprites-ai-gen generate --pack <pack> --run auto --object <id>
 go run ./cmd/sprites-ai-gen generate --pack <pack> --run auto --all
+go run ./cmd/sprites-ai-gen generate --pack <pack> --run <run-id> --object <id> --reprocess-only
 go run ./cmd/sprites-ai-gen status --pack <pack> --run <run-id>
 go run ./cmd/sprites-ai-gen review --pack <pack> --run <run-id> --object <id> --status accepted
 go run ./cmd/sprites-ai-gen deploy --pack <pack> --run <run-id> --object <id> --dry-run
@@ -37,6 +38,9 @@ go run ./cmd/sprites-ai-gen deploy --pack <pack> --run <run-id> --object <id> --
 Applications should expose these through their own Docker/Taskfile wrappers.
 Paid generation requires `OPENAI_API_KEY`; the default model is `gpt-image-2`
 and `SPRITES_AI_GEN_OPENAI_MODEL` may override it.
+`--reprocess-only` requires an existing concrete run and rebuilds artifacts
+with a provider implementation that rejects every request, so it cannot make a
+paid call.
 
 See `docs/architecture.md`, `docs/sprites-json.md`, `docs/consistency.md`, and
 `docs/workflow.md`.

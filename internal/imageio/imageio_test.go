@@ -410,6 +410,39 @@ func TestWriteSharedScaleTransparentStaticSetUsesOneLimitingScale(t *testing.T) 
 	require.Equal(t, 155, compactBounds.Max.Y)
 }
 
+func TestWriteCanvasClassScaleTransparentStaticSetDoesNotShrinkLargeCanvasParts(t *testing.T) {
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "tree.png")
+	root := filepath.Join(dir, "root.png")
+	writeOpaqueCropPNG(t, tree, image.Pt(500, 600))
+	writeOpaqueCropPNG(t, root, image.Pt(700, 120))
+	treeOutput := filepath.Join(dir, "tree-output.png")
+	rootOutput := filepath.Join(dir, "root-output.png")
+
+	calibration, err := imageio.WriteCanvasClassScaleTransparentStaticSet(
+		[]imageio.StaticSetPart{
+			{
+				ID: "tree", SourcePath: tree, OutputPath: treeOutput,
+				Size: image.Pt(768, 768), Registration: imageio.SubjectRegistrationGrounded,
+			},
+			{
+				ID: "root", SourcePath: root, OutputPath: rootOutput,
+				Size: image.Pt(512, 192), Registration: imageio.SubjectRegistrationGrounded,
+			},
+		},
+		[]imageio.PaletteColor{{R: 70, G: 80, B: 90}},
+	)
+
+	require.NoError(t, err)
+	require.Len(t, calibration.Groups, 2)
+	require.Equal(t, calibration.ScaleForPart("root"), calibration.Scale)
+	require.Equal(t, "root", calibration.LimitingPartID)
+	require.Equal(t, 1.0, calibration.ScaleForPart("tree"))
+	require.Less(t, calibration.ScaleForPart("root"), 1.0)
+	require.Equal(t, image.Pt(500, 600), opaqueBounds(readPNG(t, treeOutput)).Size())
+	require.Greater(t, opaqueBounds(readPNG(t, rootOutput)).Dx(), 400)
+}
+
 func TestWriteFullBleedOpaqueStaticSetCropsTransparentSwatchCorners(t *testing.T) {
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "source.png")

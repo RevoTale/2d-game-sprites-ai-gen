@@ -254,6 +254,38 @@ func TestRecoverSemanticPosesRejectsAmbiguousDetachedComponent(t *testing.T) {
 	require.ErrorContains(t, err, "ambiguous ownership")
 }
 
+func TestRecoverSemanticPosesIgnoresTinyAmbiguousChromaResidue(t *testing.T) {
+	layout := twoPoseSemanticLayout(t)
+	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
+	fillOpaque(board, image.Rect(280, 400, 345, 610), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	fillOpaque(board, image.Rect(670, 400, 735, 610), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	fillOpaque(board, image.Rect(507, 480, 518, 489), color.NRGBA{R: 220, G: 190, B: 80, A: 255})
+	path := filepath.Join(t.TempDir(), "board.png")
+	require.NoError(t, writePNG(path, board))
+
+	poses, err := RecoverSemanticPoses(path, layout, nil)
+
+	require.NoError(t, err)
+	require.Len(t, poses[0].Components, 1)
+	require.Len(t, poses[1].Components, 1)
+}
+
+func TestRecoverSemanticPosesKeepsTinyUnambiguousDetachedDetail(t *testing.T) {
+	layout := twoPoseSemanticLayout(t)
+	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
+	fillOpaque(board, image.Rect(280, 400, 345, 610), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	fillOpaque(board, image.Rect(670, 400, 735, 610), color.NRGBA{R: 30, G: 80, B: 180, A: 255})
+	fillOpaque(board, image.Rect(250, 580, 258, 588), color.NRGBA{R: 220, G: 190, B: 80, A: 255})
+	path := filepath.Join(t.TempDir(), "board.png")
+	require.NoError(t, writePNG(path, board))
+
+	poses, err := RecoverSemanticPoses(path, layout, nil)
+
+	require.NoError(t, err)
+	require.Len(t, poses[0].Components, 2)
+	require.Len(t, poses[1].Components, 1)
+}
+
 func TestRecoverSemanticPosesAssignsDetachedComponentOutsideExactBisector(t *testing.T) {
 	layout := twoPoseSemanticLayout(t)
 	board := image.NewNRGBA(image.Rect(0, 0, layout.CanvasWidth, layout.CanvasHeight))
